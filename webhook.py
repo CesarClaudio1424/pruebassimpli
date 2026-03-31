@@ -1,7 +1,6 @@
 import requests
 import time
-
-DELAY = 0.4
+from config import REQUEST_TIMEOUT, WEBHOOK_DELAY
 
 ENDPOINTS = {
     "Telefonica": {
@@ -33,21 +32,27 @@ ENDPOINTS = {
 
 def enviar_webhook(url, payload):
     headers = {"Content-Type": "application/json"}
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
     return response.status_code, response.text
 
 
 def procesar_ruta(ruta, url):
     payload = {"routes": [ruta]}
-    status, body = enviar_webhook(url, payload)
-    time.sleep(DELAY)
-    ok = status == 200 and body.strip() != ""
-    return ok, status, body
+    try:
+        status, body = enviar_webhook(url, payload)
+        time.sleep(WEBHOOK_DELAY)
+        ok = status == 200 and body.strip() != ""
+        return ok, status, body
+    except requests.exceptions.RequestException as e:
+        return False, 0, f"Error de conexion: {str(e)}"
 
 
 def procesar_exclusion(visita_ids, url):
     payload = {"visits": [int(v) for v in visita_ids]}
-    status, body = enviar_webhook(url, payload)
-    time.sleep(DELAY)
-    ok = status == 200 and body.strip() != ""
-    return ok, status, body
+    try:
+        status, body = enviar_webhook(url, payload)
+        time.sleep(WEBHOOK_DELAY)
+        ok = status == 200 and body.strip() != ""
+        return ok, status, body
+    except requests.exceptions.RequestException as e:
+        return False, 0, f"Error de conexion: {str(e)}"

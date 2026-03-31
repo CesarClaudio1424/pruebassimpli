@@ -1,7 +1,11 @@
 import streamlit as st
 import requests
-
-API_URL = "https://api.simpliroute.com/v1/mobile/send-webhooks"
+from config import API_SEND_WEBHOOKS, REQUEST_TIMEOUT
+from utils import (
+    render_header, render_guide, render_stat, render_label,
+    render_tip, render_error_item, load_secret,
+    create_progress_tracker, update_progress, finish_progress,
+)
 
 
 def enviar_webhook(token, acc_id, date, id_obj, tipo):
@@ -9,66 +13,39 @@ def enviar_webhook(token, acc_id, date, id_obj, tipo):
         "Authorization": f"Token {token}",
         "Content-Type": "application/json",
     }
+    try:
+        id_value = int(id_obj)
+    except ValueError:
+        id_value = id_obj
     payload = {
         "account_ids": [int(acc_id)],
         "planned_date": date,
-        tipo: [int(id_obj)],
+        tipo: [id_value],
     }
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=15)
+        response = requests.post(API_SEND_WEBHOOKS, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             return True, ""
-        else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
-    except Exception as e:
+        return False, f"HTTP {response.status_code}: {response.text}"
+    except requests.exceptions.RequestException as e:
         return False, f"Error de conexion: {str(e)}"
 
 
 def pagina_checkout_general():
-    # Header
-    st.markdown(
-        """
-        <div class="sr-header">
-            <h1>Webhook Checkout General</h1>
-            <p>Envio de webhooks para rutas y visitas de cualquier cuenta</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    render_header("Webhook Checkout General", "Envio de webhooks para rutas y visitas de cualquier cuenta")
 
-    # --- Guia de uso ---
-    with st.expander("📖 ¿Como funciona? — Guia rapida", expanded=False):
-        st.markdown(
-            """
-            <div class="sr-guide">
-                <div class="sr-step">
-                    <div class="sr-step-num">1</div>
-                    <div class="sr-step-text"><strong>Pega los datos</strong> — Formato: <code>Fecha [tab] AccountID [tab] ID</code>, uno por linea. Puedes copiar directamente desde una hoja de calculo.</div>
-                </div>
-                <div class="sr-step">
-                    <div class="sr-step-num">2</div>
-                    <div class="sr-step-text"><strong>Deteccion automatica</strong> — Si el ID tiene mas de 9 caracteres se trata como <strong>ruta</strong>, de lo contrario como <strong>visita</strong>.</div>
-                </div>
-                <div class="sr-step">
-                    <div class="sr-step-num">3</div>
-                    <div class="sr-step-text"><strong>Procesa</strong> — Cada fila se envia como un webhook individual a la API de SimpliRoute. Solo se muestran los errores.</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            """
-            <div class="sr-tip">
-                <strong>💡 Tip:</strong> Puedes mezclar rutas y visitas de distintas cuentas y fechas en un mismo envio. El formato esperado es tabulado (copiar desde Excel o Google Sheets funciona directamente).
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    render_guide(
+        steps=[
+            '<strong>Pega los datos</strong> — Formato: <code>Fecha [tab] AccountID [tab] ID</code>, uno por linea. Puedes copiar directamente desde una hoja de calculo.',
+            '<strong>Deteccion automatica</strong> — Si el ID tiene mas de 9 caracteres se trata como <strong>ruta</strong> (UUID), de lo contrario como <strong>visita</strong> (entero).',
+            '<strong>Procesa</strong> — Cada fila se envia como un webhook individual a la API de SimpliRoute. Solo se muestran los errores.',
+        ],
+        tip='Puedes mezclar rutas y visitas de distintas cuentas y fechas en un mismo envio. El formato esperado es tabulado (copiar desde Excel o Google Sheets funciona directamente).',
+    )
 
     # --- Queries de consulta ---
     with st.expander("🔍 Queries SQL — Como obtener los datos", expanded=False):
-        st.markdown('<div class="sr-label">Visitas por ID</div>', unsafe_allow_html=True)
+        render_label("Visitas por ID")
         st.code("""SELECT
     routes_visit.planned_date,
     routes_visit.account_id,
@@ -78,7 +55,7 @@ FROM
 WHERE
     routes_visit."id" IN (750012931)""", language="sql")
 
-        st.markdown('<div class="sr-label">Visitas por reference</div>', unsafe_allow_html=True)
+        render_label("Visitas por reference")
         st.code("""SELECT
     routes_visit.planned_date,
     routes_visit.account_id,
@@ -90,7 +67,7 @@ WHERE
     routes_visit.planned_date = '2025-09-04' AND
     routes_visit.reference IN ('51289023')""", language="sql")
 
-        st.markdown('<div class="sr-label">Listado de rutas de una cuenta</div>', unsafe_allow_html=True)
+        render_label("Listado de rutas de una cuenta")
         st.code("""SELECT
     "public".routes_route.planned_date,
     "public".routes_plan.account_id,
@@ -103,7 +80,7 @@ WHERE
     "public".routes_route.planned_date = '2025-02-07'
 ORDER BY 1""", language="sql")
 
-        st.markdown('<div class="sr-label">Rutas por ID (si ya tienes el ID)</div>', unsafe_allow_html=True)
+        render_label("Rutas por ID (si ya tienes el ID)")
         st.code("""SELECT
     routes_route.planned_date,
     routes_plan.account_id,
@@ -115,24 +92,13 @@ WHERE
     routes_route."id" IN ('18e2e0b8-4db5-4a17-bb39-d5b3a9c5e393')
 ORDER BY 1 ASC""", language="sql")
 
-        st.markdown(
-            """
-            <div class="sr-tip">
-                <strong>💡 Tip:</strong> El resultado de estas queries ya viene en el formato necesario (planned_date, account_id, id). Copia las filas directamente y pegalas en el campo de datos.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        render_tip('<strong>💡 Tip:</strong> El resultado de estas queries ya viene en el formato necesario (planned_date, account_id, id). Copia las filas directamente y pegalas en el campo de datos.')
 
     # --- Token desde secrets ---
-    try:
-        token = st.secrets.api_config.checkout_token
-    except (AttributeError, KeyError):
-        st.error("No se encontro `checkout_token` en `.streamlit/secrets.toml`. Configura `[api_config]` con `checkout_token`.")
-        st.stop()
+    token = load_secret("checkout_token", "No se encontro `checkout_token` en `.streamlit/secrets.toml`. Configura `[api_config]` con `checkout_token`.")
 
     # --- Paso 1: Datos ---
-    st.markdown('<div class="sr-label">Paso 1 · Datos (Fecha [tab] AccountID [tab] ID)</div>', unsafe_allow_html=True)
+    render_label("Paso 1 · Datos (Fecha [tab] AccountID [tab] ID)")
 
     datos_input = st.text_area(
         "Datos",
@@ -142,17 +108,9 @@ ORDER BY 1 ASC""", language="sql")
     )
 
     if not datos_input or not datos_input.strip():
-        st.markdown(
-            """
-            <div class="sr-tip">
-                Pega los datos a procesar. Cada linea debe tener tres campos separados por tabulador: Fecha, AccountID e ID.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        render_tip("Pega los datos a procesar. Cada linea debe tener tres campos separados por tabulador: Fecha, AccountID e ID.")
         st.stop()
 
-    # Parsear lineas
     lineas = [line.strip() for line in datos_input.strip().split("\n") if line.strip()]
     errores_formato = []
     items = []
@@ -165,63 +123,37 @@ ORDER BY 1 ASC""", language="sql")
         date = campos[0].strip()
         acc_id = campos[1].strip()
         id_obj = campos[2].strip()
+
+        if not acc_id.isdigit():
+            errores_formato.append(f"Linea {i + 1}: AccountID '{acc_id}' no es numerico")
+            continue
+
+        # Route UUIDs tienen 36 chars, visit IDs son enteros de hasta 9 digitos
         tipo = "route_ids" if len(id_obj) > 9 else "visit_ids"
         etiqueta = "Ruta" if tipo == "route_ids" else "Visita"
         items.append((date, acc_id, id_obj, tipo, etiqueta))
 
     if errores_formato:
         for err in errores_formato:
-            st.markdown(
-                f'<div class="sr-result sr-result-err">✗ {err}</div>',
-                unsafe_allow_html=True,
-            )
+            render_error_item(err)
 
     if not items:
-        st.markdown(
-            """
-            <div class="sr-tip" style="border-left-color: #d32f2f;">
-                <strong>⚠️ Atencion:</strong> No se encontraron filas validas. Verifica que los datos esten separados por tabulador.
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_tip(
+            "<strong>⚠️ Atencion:</strong> No se encontraron filas validas. Verifica que los datos esten separados por tabulador.",
+            warning=True,
         )
         st.stop()
 
-    # Stats
     rutas = sum(1 for _, _, _, t, _ in items if t == "route_ids")
     visitas = sum(1 for _, _, _, t, _ in items if t == "visit_ids")
 
     col_stat1, col_stat2, col_stat3 = st.columns(3)
     with col_stat1:
-        st.markdown(
-            f"""
-            <div class="sr-stat">
-                <div class="sr-stat-number">{len(items)}</div>
-                <div class="sr-stat-label">total a procesar</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_stat(len(items), "total a procesar"), unsafe_allow_html=True)
     with col_stat2:
-        st.markdown(
-            f"""
-            <div class="sr-stat">
-                <div class="sr-stat-number">{rutas}</div>
-                <div class="sr-stat-label">rutas</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_stat(rutas, "rutas"), unsafe_allow_html=True)
     with col_stat3:
-        st.markdown(
-            f"""
-            <div class="sr-stat">
-                <div class="sr-stat-number">{visitas}</div>
-                <div class="sr-stat-label">visitas</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_stat(visitas, "visitas"), unsafe_allow_html=True)
 
     if not st.button("Procesar webhooks", type="primary", key="btn_checkout"):
         st.stop()
@@ -231,17 +163,7 @@ ORDER BY 1 ASC""", language="sql")
     exitosos = 0
     fallidos = []
 
-    col_barra, col_contador = st.columns([5, 1])
-    with col_barra:
-        barra = st.progress(0, text="Procesando webhooks...")
-    with col_contador:
-        contador = st.empty()
-        contador.markdown(
-            f'<div class="sr-stat" style="padding:0.4rem 0.6rem;"><div class="sr-stat-number" style="font-size:1.1rem;">0/{total}</div></div>',
-            unsafe_allow_html=True,
-        )
-
-    contenedor_errores = st.container()
+    barra, contador, contenedor_errores = create_progress_tracker(total, "Procesando webhooks...")
 
     for i, (date, acc_id, id_obj, tipo, etiqueta) in enumerate(items):
         ok, detalle = enviar_webhook(token, acc_id, date, id_obj, tipo)
@@ -252,18 +174,11 @@ ORDER BY 1 ASC""", language="sql")
         else:
             fallidos.append((etiqueta, id_obj, detalle))
             with contenedor_errores:
-                st.markdown(
-                    f'<div class="sr-result sr-result-err">✗ {etiqueta} {id_obj} (cuenta {acc_id}) — {detalle}</div>',
-                    unsafe_allow_html=True,
-                )
+                render_error_item(f"{etiqueta} {id_obj} (cuenta {acc_id}) — {detalle}")
 
-        barra.progress(procesados / total, text="Procesando webhooks...")
-        contador.markdown(
-            f'<div class="sr-stat" style="padding:0.4rem 0.6rem;"><div class="sr-stat-number" style="font-size:1.1rem;">{procesados}/{total}</div></div>',
-            unsafe_allow_html=True,
-        )
+        update_progress(barra, contador, procesados, total, "Procesando webhooks...")
 
-    barra.progress(1.0, text="Finalizado")
+    finish_progress(barra)
 
     if exitosos > 0:
         st.success(f"{exitosos} de {total} procesados correctamente")

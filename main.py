@@ -53,7 +53,7 @@ with st.sidebar:
 
 # --- Dispatch ---
 if pagina == "Edicion Masiva de Visitas":
-    pagina_edicion(THEME)
+    pagina_edicion()
 elif pagina == "Webhooks Likewise":
     pagina_webhooks()
 elif pagina == "Bloqueo LVP":

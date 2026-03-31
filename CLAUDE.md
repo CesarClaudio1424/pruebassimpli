@@ -20,6 +20,8 @@ App Streamlit multi-herramienta con navegacion por sidebar. Incluye cinco herram
 ## Estructura
 ```
 main.py                              # Entry point: page config, sidebar, tema, dispatch
+config.py                            # Constantes centralizadas (endpoints, timeouts, delays)
+utils.py                             # Funciones UI compartidas (header, guide, stats, progress)
 estilos.py                           # THEME dict + generador de CSS dinamico
 edicion.py                           # Pagina Edicion Masiva (UI + helpers API/CSV)
 pagina_webhooks.py                   # Pagina Webhooks Likewise (UI)
@@ -27,7 +29,7 @@ webhook.py                           # Backend webhooks Likewise (URLs, envio HT
 bloqueo_lvp.py                       # Pagina Bloqueo LVP (UI + API configs Liverpool)
 reporte_visitas.py                   # Pagina Reporte Visitas/Rutas (UI + API reportes)
 checkout_general.py                  # Pagina Checkout General (UI + API send-webhooks)
-cuentas.csv                          # 58 cuentas Liverpool (nombre, id)
+cuentas.csv                          # 57 cuentas Liverpool (nombre, id)
 requirements.txt                     # Dependencias para Streamlit Cloud
 .gitignore                           # Exclusiones de git
 .claude/commands/simpliroute-api.md  # Skill con referencia de API SimpliRoute

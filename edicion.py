@@ -5,8 +5,8 @@ import io
 import time
 from datetime import datetime
 import pandas as pd
-
-API_BASE = "https://api.simpliroute.com/v1"
+from config import API_BASE, REQUEST_TIMEOUT, EDIT_DELAY, MAX_BLOCK_SIZE
+from utils import render_header, render_guide, render_stat, render_label, render_tip
 
 PLANTILLA_CAMPOS = [
     {"columna": "id", "tipo": "integer", "req": True, "desc": "ID de la visita en SimpliRoute", "ejemplo": "200189436"},
@@ -44,18 +44,24 @@ def generar_csv_plantilla():
 
 def validar_cuenta(token):
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
-    response = requests.get(f"{API_BASE}/accounts/me/", headers=headers)
-    if response.status_code == 200:
-        nombre = response.json().get("account", {}).get("name", "Sin nombre")
-        return True, nombre
+    try:
+        response = requests.get(f"{API_BASE}/accounts/me/", headers=headers, timeout=REQUEST_TIMEOUT)
+        if response.status_code == 200:
+            nombre = response.json().get("account", {}).get("name", "Sin nombre")
+            return True, nombre
+    except requests.exceptions.RequestException:
+        pass
     return False, None
 
 
 def enviar_visitas(bloque, token):
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
-    response = requests.put(f"{API_BASE}/routes/visits/", headers=headers, json=bloque)
-    time.sleep(0.5)
-    return response.status_code, response.text
+    try:
+        response = requests.put(f"{API_BASE}/routes/visits/", headers=headers, json=bloque, timeout=REQUEST_TIMEOUT)
+        time.sleep(EDIT_DELAY)
+        return response.status_code, response.text
+    except requests.exceptions.RequestException as e:
+        return 0, f"Error de conexion: {str(e)}"
 
 
 def convertir_fecha(fecha_str):
@@ -73,61 +79,28 @@ def leer_csv(archivo):
 
 def calcular_tamano_bloque(total):
     bloque = total // 5
-    if bloque >= 500:
-        return 500
+    if bloque >= MAX_BLOCK_SIZE:
+        return MAX_BLOCK_SIZE
     if bloque < 1:
         return 1
     return bloque
 
 
-def pagina_edicion(THEME):
-    # Header
-    st.markdown(
-        """
-        <div class="sr-header">
-            <h1>Edicion Masiva de Visitas</h1>
-            <p>Edita visitas en bloque via API</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def pagina_edicion():
+    render_header("Edicion Masiva de Visitas", "Edita visitas en bloque via API")
+
+    render_guide(
+        steps=[
+            '<strong>Ingresa el token de API</strong> — El token de la cuenta donde estan las visitas. Puedes obtenerlo desde <a href="https://simpliroute.tryretool.com/embedded/public/a11dd57d-c962-441f-b27a-e1ede0a85645" target="_blank">esta herramienta</a>.',
+            '<strong>Prepara tu archivo CSV</strong> — Debe tener una columna <code>id</code> (obligatoria) con el ID de cada visita, mas las columnas de los campos que quieras editar. Descarga la plantilla de ejemplo mas abajo.',
+            '<strong>Sube el CSV</strong> — La app mostrara una vista previa de los datos cargados para que verifiques antes de procesar.',
+            '<strong>Procesa la edicion</strong> — Los datos se envian a SimpliRoute en bloques. Veras el progreso en tiempo real y un resumen al finalizar.',
+        ],
+        tip='Solo incluye en el CSV las columnas que necesitas modificar. No es necesario enviar todos los campos — basta con <code>id</code> + los campos a editar.',
     )
 
-    # --- Guia de uso ---
-    with st.expander("📖 ¿Como funciona? — Guia rapida", expanded=False):
-        st.markdown(
-            """
-            <div class="sr-guide">
-                <div class="sr-step">
-                    <div class="sr-step-num">1</div>
-                    <div class="sr-step-text"><strong>Ingresa el token de API</strong> — El token de la cuenta donde estan las visitas. Puedes obtenerlo desde <a href="https://simpliroute.tryretool.com/embedded/public/a11dd57d-c962-441f-b27a-e1ede0a85645" target="_blank">esta herramienta</a>.</div>
-                </div>
-                <div class="sr-step">
-                    <div class="sr-step-num">2</div>
-                    <div class="sr-step-text"><strong>Prepara tu archivo CSV</strong> — Debe tener una columna <code>id</code> (obligatoria) con el ID de cada visita, mas las columnas de los campos que quieras editar. Descarga la plantilla de ejemplo mas abajo.</div>
-                </div>
-                <div class="sr-step">
-                    <div class="sr-step-num">3</div>
-                    <div class="sr-step-text"><strong>Sube el CSV</strong> — La app mostrara una vista previa de los datos cargados para que verifiques antes de procesar.</div>
-                </div>
-                <div class="sr-step">
-                    <div class="sr-step-num">4</div>
-                    <div class="sr-step-text"><strong>Procesa la edicion</strong> — Los datos se envian a SimpliRoute en bloques. Veras el progreso en tiempo real y un resumen al finalizar.</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            """
-            <div class="sr-tip">
-                <strong>💡 Tip:</strong> Solo incluye en el CSV las columnas que necesitas modificar. No es necesario enviar todos los campos — basta con <code>id</code> + los campos a editar.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
     # --- Paso 1: Autenticacion ---
-    st.markdown('<div class="sr-label">Paso 1 · Token de API</div>', unsafe_allow_html=True)
+    render_label("Paso 1 · Token de API")
     token = st.text_input("Token", type="password", label_visibility="collapsed", placeholder="Ingresa el token de API")
 
     if token:
@@ -142,29 +115,19 @@ def pagina_edicion(THEME):
             st.error("Token invalido. Revisa tu token de API.")
             st.stop()
     else:
-        st.markdown(
-            """
-            <div class="sr-tip">
-                Ingresa el token de API de la cuenta a la que pertenecen las visitas. Puedes obtenerlo desde
-                <a href="https://simpliroute.tryretool.com/embedded/public/a11dd57d-c962-441f-b27a-e1ede0a85645" target="_blank"><strong>esta herramienta</strong></a>.
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_tip(
+            'Ingresa el token de API de la cuenta a la que pertenecen las visitas. Puedes obtenerlo desde '
+            '<a href="https://simpliroute.tryretool.com/embedded/public/a11dd57d-c962-441f-b27a-e1ede0a85645" target="_blank"><strong>esta herramienta</strong></a>.'
         )
         st.stop()
 
     # --- Paso 2: Archivo CSV ---
-    st.markdown('<div class="sr-label">Paso 2 · Archivo CSV</div>', unsafe_allow_html=True)
+    render_label("Paso 2 · Archivo CSV")
 
     with st.expander("📋 Formato del CSV y campos disponibles"):
-        st.markdown(
-            """
-            <div class="sr-tip">
-                <strong>Importante:</strong> La columna <code>id</code> es <strong>obligatoria</strong> — identifica que visita se va a editar.
-                Ademas necesitas al menos una columna mas con el campo que quieras modificar. Las fechas deben ir en formato <code>dd/mm/yyyy</code>.
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_tip(
+            '<strong>Importante:</strong> La columna <code>id</code> es <strong>obligatoria</strong> — identifica que visita se va a editar. '
+            'Ademas necesitas al menos una columna mas con el campo que quieras modificar. Las fechas deben ir en formato <code>dd/mm/yyyy</code>.'
         )
         filas_html = ""
         for campo in PLANTILLA_CAMPOS:
@@ -181,7 +144,6 @@ def pagina_edicion(THEME):
             unsafe_allow_html=True,
         )
 
-    # Descarga de plantilla
     st.download_button(
         label="⬇ Descargar plantilla CSV de ejemplo",
         data=generar_csv_plantilla(),
@@ -197,14 +159,7 @@ def pagina_edicion(THEME):
     )
 
     if not archivo:
-        st.markdown(
-            """
-            <div class="sr-tip">
-                Sube un archivo <strong>.csv</strong> con los datos de las visitas a editar. Puedes descargar la plantilla de ejemplo como referencia.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        render_tip('Sube un archivo <strong>.csv</strong> con los datos de las visitas a editar. Puedes descargar la plantilla de ejemplo como referencia.')
         st.stop()
 
     data = leer_csv(archivo)
@@ -213,7 +168,6 @@ def pagina_edicion(THEME):
         st.error("El archivo CSV esta vacio o no se pudo leer.")
         st.stop()
 
-    # Validar que exista columna id + al menos un campo a editar
     columnas = list(data[0].keys()) if data else []
     if "id" not in columnas:
         st.error("El CSV debe tener una columna **id** para identificar las visitas a editar.")
@@ -223,33 +177,16 @@ def pagina_edicion(THEME):
         st.stop()
 
     # --- Paso 3: Preview y procesamiento ---
-    st.markdown('<div class="sr-label">Paso 3 · Revisar y procesar</div>', unsafe_allow_html=True)
+    render_label("Paso 3 · Revisar y procesar")
 
-    # Stats
     col_stat, col_cols = st.columns(2)
     with col_stat:
-        st.markdown(
-            f"""
-            <div class="sr-stat">
-                <div class="sr-stat-number">{len(data):,}</div>
-                <div class="sr-stat-label">visitas cargadas</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_stat(f"{len(data):,}", "visitas cargadas"), unsafe_allow_html=True)
     with col_cols:
-        st.markdown(
-            f"""
-            <div class="sr-stat">
-                <div class="sr-stat-number">{len(columnas)}</div>
-                <div class="sr-stat-label">campos a editar</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_stat(len(columnas), "campos a editar"), unsafe_allow_html=True)
 
     st.markdown(
-        f'<div style="font-size:0.78rem; color:{THEME["label"]}; margin-bottom:0.3rem;">Columnas detectadas: <code>{", ".join(columnas)}</code></div>',
+        f'<div class="sr-label" style="text-transform:none; letter-spacing:normal;">Columnas detectadas: <code>{", ".join(columnas)}</code></div>',
         unsafe_allow_html=True,
     )
 
@@ -259,7 +196,6 @@ def pagina_edicion(THEME):
     if not st.button("Procesar edicion", type="primary", key="btn_edicion"):
         st.stop()
 
-    # Convertir fechas
     for registro in data:
         if "planned_date" in registro:
             registro["planned_date"] = convertir_fecha(registro["planned_date"])
@@ -294,6 +230,4 @@ def pagina_edicion(THEME):
     if errores:
         st.error(f"{len(errores)} bloque(s) con error")
         for err in errores:
-            st.warning(
-                f"Bloque {err['bloque']} (HTTP {err['codigo']}): {err['detalle'][:200]}"
-            )
+            st.warning(f"Bloque {err['bloque']} (HTTP {err['codigo']}): {err['detalle']}")
