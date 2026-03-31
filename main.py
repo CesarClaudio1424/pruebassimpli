@@ -4,6 +4,7 @@ from edicion import pagina_edicion
 from pagina_webhooks import pagina_webhooks
 from bloqueo_lvp import pagina_bloqueo_lvp
 from reporte_visitas import pagina_reporte_visitas
+from checkout_general import pagina_checkout_general
 
 st.set_page_config(
     page_title="SimpliRoute Tools",
@@ -38,7 +39,7 @@ with st.sidebar:
 
     pagina = st.radio(
         "Herramienta",
-        ["Edicion Masiva de Visitas", "Webhooks Likewise", "Bloqueo LVP", "Reporte Visitas/Rutas"],
+        ["Edicion Masiva de Visitas", "Webhooks Likewise", "Bloqueo LVP", "Reporte Visitas/Rutas", "Checkout General"],
         label_visibility="collapsed",
     )
 
@@ -57,5 +58,7 @@ elif pagina == "Webhooks Likewise":
     pagina_webhooks()
 elif pagina == "Bloqueo LVP":
     pagina_bloqueo_lvp()
-else:
+elif pagina == "Reporte Visitas/Rutas":
     pagina_reporte_visitas()
+else:
+    pagina_checkout_general()

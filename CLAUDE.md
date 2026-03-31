@@ -1,11 +1,12 @@
 # SimpliRoute Tools
 
 ## Descripcion
-App Streamlit multi-herramienta con navegacion por sidebar. Incluye cuatro herramientas:
+App Streamlit multi-herramienta con navegacion por sidebar. Incluye cinco herramientas:
 1. **Edicion Masiva de Visitas** — Sube un CSV y edita visitas en bloque via API SimpliRoute (PUT).
 2. **Webhooks Likewise** — Envia webhooks a Google Cloud Functions para procesar rutas/visitas del middleware Likewise (POST).
 3. **Bloqueo LVP** — Configura bloqueo de edicion y modo seguridad en cuentas Liverpool via API SimpliRoute (POST).
 4. **Reporte Visitas/Rutas** — Genera reportes por rango de fechas dividido en sub-intervalos y los envia por correo via API SimpliRoute (GET).
+5. **Checkout General** — Envia webhooks de checkout a SimpliRoute para rutas y visitas de cualquier cuenta (POST).
 
 ## Stack
 - **Python 3.12.3** con entorno virtual `.venv`
@@ -25,6 +26,7 @@ pagina_webhooks.py                   # Pagina Webhooks Likewise (UI)
 webhook.py                           # Backend webhooks Likewise (URLs, envio HTTP)
 bloqueo_lvp.py                       # Pagina Bloqueo LVP (UI + API configs Liverpool)
 reporte_visitas.py                   # Pagina Reporte Visitas/Rutas (UI + API reportes)
+checkout_general.py                  # Pagina Checkout General (UI + API send-webhooks)
 cuentas.csv                          # 58 cuentas Liverpool (nombre, id)
 requirements.txt                     # Dependencias para Streamlit Cloud
 .gitignore                           # Exclusiones de git
@@ -66,6 +68,13 @@ requirements.txt                     # Dependencias para Streamlit Cloud
    - `avoid_edit_checkout_after_route_finished`
 5. Muestra resultado por cada configuracion
 
+## Flujo: Checkout General
+1. Token se carga automaticamente desde `st.secrets.api_config.checkout_token`
+2. Usuario pega datos tabulados (Fecha [tab] AccountID [tab] ID), uno por linea
+3. Deteccion automatica: ID con mas de 9 caracteres = ruta, sino = visita
+4. Al procesar: envia un POST por cada fila a `/v1/mobile/send-webhooks`
+5. Solo muestra errores en la lista; contador de procesados junto a la barra de progreso
+
 ## Flujo: Reporte Visitas/Rutas
 1. Usuario selecciona tipo de reporte (Visitas o Rutas)
 2. Ingresa token de API y correo destino
@@ -97,6 +106,11 @@ streamlit run main.py
 - `POST /likewize/webhook/routes/checkout` - Checkout de rutas
 - `POST /likewize/webhook/visits/support` - Exclusion de visitas
 - Sin auth (acceso por URL)
+
+### SimpliRoute (Checkout General)
+- `POST /v1/mobile/send-webhooks` - Envio de webhooks para rutas/visitas
+- Payload: `{ "account_ids": [int], "planned_date": "YYYY-MM-DD", "route_ids"|"visit_ids": [int] }`
+- Auth: `Authorization: Token {CHECKOUT_TOKEN}` (desde secrets)
 
 ### SimpliRoute (Reporte Visitas/Rutas)
 - `GET /v1/reports/visits/from/{start}/to/{end}/?email={email}` - Reporte de visitas (api.simpliroute.com)
