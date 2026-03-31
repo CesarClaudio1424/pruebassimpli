@@ -1,10 +1,11 @@
 # SimpliRoute Tools
 
 ## Descripcion
-App Streamlit multi-herramienta con navegacion por sidebar. Incluye tres herramientas:
+App Streamlit multi-herramienta con navegacion por sidebar. Incluye cuatro herramientas:
 1. **Edicion Masiva de Visitas** — Sube un CSV y edita visitas en bloque via API SimpliRoute (PUT).
 2. **Webhooks Likewise** — Envia webhooks a Google Cloud Functions para procesar rutas/visitas del middleware Likewise (POST).
 3. **Bloqueo LVP** — Configura bloqueo de edicion y modo seguridad en cuentas Liverpool via API SimpliRoute (POST).
+4. **Reporte Visitas/Rutas** — Genera reportes por rango de fechas dividido en sub-intervalos y los envia por correo via API SimpliRoute (GET).
 
 ## Stack
 - **Python 3.12.3** con entorno virtual `.venv`
@@ -23,6 +24,7 @@ edicion.py                           # Pagina Edicion Masiva (UI + helpers API/C
 pagina_webhooks.py                   # Pagina Webhooks Likewise (UI)
 webhook.py                           # Backend webhooks Likewise (URLs, envio HTTP)
 bloqueo_lvp.py                       # Pagina Bloqueo LVP (UI + API configs Liverpool)
+reporte_visitas.py                   # Pagina Reporte Visitas/Rutas (UI + API reportes)
 cuentas.csv                          # 58 cuentas Liverpool (nombre, id)
 requirements.txt                     # Dependencias para Streamlit Cloud
 .gitignore                           # Exclusiones de git
@@ -55,13 +57,22 @@ requirements.txt                     # Dependencias para Streamlit Cloud
 6. Solo muestra errores en la lista; contador de procesados junto a la barra de progreso
 
 ## Flujo: Bloqueo LVP
-1. Usuario ingresa token de API
+1. Token se carga automaticamente desde `st.secrets.api_config.auth_token`
 2. Selecciona cuenta Liverpool del dropdown (58 cuentas desde cuentas.csv)
 3. Elige valor True (activar bloqueo) o False (desactivar)
-4. Al procesar: envia 2 POST a `/accounts/{ID}/configs/` con las keys:
+4. Al procesar: envia 3 POST a `/accounts/{ID}/configs/` con las keys:
    - `disable_edit_for_active_and_finished_routes`
    - `enable_safety_mode`
+   - `avoid_edit_checkout_after_route_finished`
 5. Muestra resultado por cada configuracion
+
+## Flujo: Reporte Visitas/Rutas
+1. Usuario selecciona tipo de reporte (Visitas o Rutas)
+2. Ingresa token de API y correo destino
+3. Define rango de fechas e intervalo de division (Semanal/Quincenal/Mensual)
+4. Al procesar: divide el rango en sub-intervalos y envia un GET por cada uno
+5. Pausa de 3 segundos entre solicitudes para evitar rate limiting
+6. Los reportes llegan al correo ingresado
 
 ## Ejecutar
 ```bash
@@ -86,3 +97,8 @@ streamlit run main.py
 - `POST /likewize/webhook/routes/checkout` - Checkout de rutas
 - `POST /likewize/webhook/visits/support` - Exclusion de visitas
 - Sin auth (acceso por URL)
+
+### SimpliRoute (Reporte Visitas/Rutas)
+- `GET /v1/reports/visits/from/{start}/to/{end}/?email={email}` - Reporte de visitas (api.simpliroute.com)
+- `GET /v1/reports/routes/from/{start}/to/{end}/?email={email}` - Reporte de rutas (api-gateway.simpliroute.com)
+- Auth: `Authorization: Token {API_TOKEN}`
