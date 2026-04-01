@@ -149,10 +149,17 @@ def pagina_webhooks():
                     st.stop()
 
             refs_excluidos = set(items)
+            refs_encontrados = {v.get("reference") for v in visitas if v.get("reference") in refs_excluidos}
             visitas_a_limpiar = [v for v in visitas if v.get("reference") in refs_excluidos]
+            no_encontrados = refs_excluidos - refs_encontrados
+
+            if no_encontrados:
+                st.warning(f"{len(no_encontrados)} visitas no encontradas en la fecha {fecha_str}")
+                with st.expander("Ver visitas no encontradas"):
+                    st.code("\n".join(sorted(no_encontrados)))
 
             if not visitas_a_limpiar:
-                st.warning(f"No se encontraron visitas excluidas en la fecha {fecha_str}")
+                pass
             else:
                 st.info(f"{len(visitas_a_limpiar)} de {len(items)} visitas encontradas en la fecha {fecha_str}")
 
