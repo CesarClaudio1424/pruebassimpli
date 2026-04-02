@@ -338,14 +338,21 @@ def pagina_unilever():
 
         for i in range(0, len(payloads), block_size):
             bloque = payloads[i : i + block_size]
+            num_bloque = i // block_size + 1
             codigo, respuesta = _enviar_visitas(bloque, token)
+
+            with st.expander(f"{agencia} — Bloque {num_bloque} (HTTP {codigo})", expanded=codigo != 200):
+                st.markdown("**Request (payload enviado):**")
+                st.json(bloque)
+                st.markdown("**Response:**")
+                st.code(respuesta, language="json")
 
             if codigo == 200:
                 editadas_agencia += len(bloque)
             else:
                 total_errores_bloques += 1
                 with contenedor_errores:
-                    render_error_item(f"{agencia} — Bloque {i // block_size + 1} (HTTP {codigo}): {respuesta}")
+                    render_error_item(f"{agencia} — Bloque {num_bloque} (HTTP {codigo}): {respuesta}")
 
             procesados = min(i + block_size, len(payloads))
             update_progress(barra, contador, procesados, len(payloads), f"Editando {agencia}...")
