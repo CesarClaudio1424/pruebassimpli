@@ -182,6 +182,8 @@ def pagina_webhooks():
                         refs = ", ".join(v.get("reference", str(v["id"])) for v in batch)
                         with errores_l:
                             render_error_item(f"Lote {procesados_l} ({refs}) — HTTP {status_l}")
+                            if body_l:
+                                st.code(body_l[:500])
 
                     update_progress(barra_l, contador_l, procesados_l, total_batches, "Limpiando visitas...")
 
