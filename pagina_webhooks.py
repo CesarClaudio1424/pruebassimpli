@@ -1,5 +1,7 @@
 import streamlit as st
 import webhook
+import math
+from config import CLEANUP_NUM_BATCHES, MAX_BLOCK_SIZE
 from utils import (
     render_header, render_guide, render_stat, render_label,
     render_tip, render_error_item, render_cuenta_badge,
@@ -165,19 +167,23 @@ def pagina_webhooks():
 
                 total_l = len(visitas_a_limpiar)
                 exitosos_l = 0
-                barra_l, contador_l, errores_l = create_progress_tracker(total_l, "Limpiando visitas...")
+                batch_size = min(math.ceil(total_l / CLEANUP_NUM_BATCHES), MAX_BLOCK_SIZE)
+                batches = [visitas_a_limpiar[i:i + batch_size] for i in range(0, total_l, batch_size)]
+                total_batches = len(batches)
+                barra_l, contador_l, errores_l = create_progress_tracker(total_batches, "Limpiando visitas...")
 
-                for i, visita in enumerate(visitas_a_limpiar):
-                    ok_l, status_l, body_l = webhook.limpiar_visita(token, visita["id"])
-                    procesados_l = i + 1
+                for idx, batch in enumerate(batches):
+                    ok_l, status_l, body_l = webhook.limpiar_visitas_batch(token, batch)
+                    procesados_l = idx + 1
 
                     if ok_l:
-                        exitosos_l += 1
+                        exitosos_l += len(batch)
                     else:
+                        refs = ", ".join(v.get("reference", str(v["id"])) for v in batch)
                         with errores_l:
-                            render_error_item(f"Visita {visita.get('reference')} (ID {visita['id']}) — HTTP {status_l}")
+                            render_error_item(f"Lote {procesados_l} ({refs}) — HTTP {status_l}")
 
-                    update_progress(barra_l, contador_l, procesados_l, total_l, "Limpiando visitas...")
+                    update_progress(barra_l, contador_l, procesados_l, total_batches, "Limpiando visitas...")
 
                 finish_progress(barra_l)
 

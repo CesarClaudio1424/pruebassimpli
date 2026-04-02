@@ -1,6 +1,6 @@
 import requests
 import time
-from config import API_BASE, REQUEST_TIMEOUT, WEBHOOK_DELAY
+from config import API_BASE, REQUEST_TIMEOUT, CLEANUP_TIMEOUT, WEBHOOK_DELAY
 
 ENDPOINTS = {
     "Telefonica": {
@@ -43,7 +43,7 @@ def obtener_visitas_fecha(token, fecha):
     url = f"{API_BASE}/routes/visits/?planned_date={fecha}"
     visitas = []
     while url:
-        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        resp = requests.get(url, headers=headers, timeout=CLEANUP_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, list):
@@ -55,15 +55,15 @@ def obtener_visitas_fecha(token, fecha):
     return visitas
 
 
-def limpiar_visita(token, visit_id):
-    url = f"{API_BASE}/routes/visits/{visit_id}"
+def limpiar_visitas_batch(token, visitas):
+    url = f"{API_BASE}/routes/visits/"
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/json",
     }
-    payload = {"route": None, "planned_date": "2020-01-01"}
+    payload = [{"id": v["id"], "route": None, "planned_date": "2020-01-01"} for v in visitas]
     try:
-        resp = requests.put(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+        resp = requests.put(url, headers=headers, json=payload, timeout=CLEANUP_TIMEOUT)
         return resp.status_code == 200, resp.status_code, resp.text
     except requests.exceptions.RequestException as e:
         return False, 0, f"Error de conexion: {str(e)}"
