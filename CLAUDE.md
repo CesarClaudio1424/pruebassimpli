@@ -61,9 +61,11 @@ runtime.txt                          # Pin Python 3.12 para Streamlit Cloud
 5. Valida status 200 + body no vacio (body vacio = error)
 6. Solo muestra errores en la lista; contador de procesados junto a la barra de progreso
 7. (Opcional) Al excluir, puede tambien limpiar las visitas de SimpliRoute:
-   - Usuario marca checkbox "Tambien eliminar visitas de SimpliRoute" e ingresa fecha
+   - Usuario marca checkbox "Tambien eliminar visitas de SimpliRoute" e ingresa rango de fechas (max 7 dias)
    - Token se carga desde `st.secrets.api_config.token_{cuenta}` (token_telefonica, token_entel, etc.)
-   - GET visitas por fecha, filtra las excluidas, PUT a cada una con `route: null`, `planned_date: 2020-01-01`
+   - GET visitas por cada dia del rango, filtra las excluidas sin ruta asignada
+   - PUT bulk a `/routes/visits/` en lotes (total / 5, max 500 por lote) con `route: ""`, `planned_date: 2020-01-01`
+   - Timeout de 600s para consultas y edicion de limpieza
 
 ## Flujo: Bloqueo LVP
 1. Token se carga automaticamente desde `st.secrets.api_config.auth_token`
@@ -115,10 +117,11 @@ streamlit run main.py
 - Sin auth (acceso por URL)
 
 ### SimpliRoute (Limpieza post-exclusion)
-- `GET /v1/routes/visits/?planned_date={YYYY-MM-DD}` - Obtener visitas por fecha
-- `PUT /v1/routes/visits/{visit_id}` - Quitar ruta y mover fecha a 2020-01-01
+- `GET /v1/routes/visits/?planned_date={YYYY-MM-DD}` - Obtener visitas por fecha (una consulta por dia del rango)
+- `PUT /v1/routes/visits/` - Edicion bulk: quitar ruta y mover fecha a 2020-01-01 (lotes de total/5, max 500)
 - Auth: `Authorization: Token {token_cuenta}` (desde secrets: token_telefonica, token_entel, etc.)
-- Matching: visitas se identifican por campo `reference`
+- Matching: visitas se identifican por campo `reference`, solo se limpian las que no tienen ruta asignada
+- Timeout: 600s (CLEANUP_TIMEOUT en config.py)
 
 ### SimpliRoute (Checkout General)
 - `POST /v1/mobile/send-webhooks` - Envio de webhooks para rutas/visitas
