@@ -320,6 +320,24 @@ def generar_css(THEME, dark):
         color: {"#ff6b6b" if dark else "#d32f2f"};
     }}
 
+    /* Sidebar toggle en movil */
+    @media (max-width: 768px) {{
+        [data-testid="stSidebarCollapsedControl"] {{
+            background: linear-gradient(135deg, #2A2BA1 0%, #1a1b6b 100%) !important;
+            border-radius: 0 0.6rem 0.6rem 0 !important;
+            padding: 0.5rem !important;
+            box-shadow: 0 2px 8px rgba(42, 43, 161, 0.4) !important;
+            top: 0.5rem !important;
+            left: 0 !important;
+            z-index: 999 !important;
+        }}
+        [data-testid="stSidebarCollapsedControl"] svg {{
+            color: white !important;
+            width: 1.2rem !important;
+            height: 1.2rem !important;
+        }}
+    }}
+
     /* Alertas Streamlit - texto visible en ambos modos */
     [data-testid="stNotification"] p,
     .stAlert p {{
