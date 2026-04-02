@@ -1,6 +1,7 @@
+import time
 import streamlit as st
 import requests
-from config import API_SEND_WEBHOOKS, REQUEST_TIMEOUT
+from config import API_SEND_WEBHOOKS, REQUEST_TIMEOUT, MAX_RETRIES, RETRY_BASE_DELAY
 from utils import (
     render_header, render_guide, render_stat, render_label,
     render_tip, render_error_item, load_secret,
@@ -22,13 +23,21 @@ def enviar_webhook(token, acc_id, date, id_obj, tipo):
         "planned_date": date,
         tipo: [id_value],
     }
-    try:
-        response = requests.post(API_SEND_WEBHOOKS, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
-        if response.status_code == 200:
-            return True, ""
-        return False, f"HTTP {response.status_code}: {response.text}"
-    except requests.exceptions.RequestException as e:
-        return False, f"Error de conexion: {str(e)}"
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = requests.post(API_SEND_WEBHOOKS, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                return True, ""
+            if response.status_code >= 500 and attempt < MAX_RETRIES:
+                time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                continue
+            return False, f"HTTP {response.status_code}: {response.text}"
+        except requests.exceptions.RequestException as e:
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                continue
+            return False, f"Error de conexion: {str(e)}"
+    return False, "Reintentos agotados"
 
 
 def pagina_checkout_general():
