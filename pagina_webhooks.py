@@ -1,6 +1,7 @@
 import streamlit as st
 import webhook
 import math
+from datetime import timedelta
 from config import CLEANUP_NUM_BATCHES, MAX_BLOCK_SIZE
 from utils import (
     render_header, render_guide, render_stat, render_label,
@@ -87,10 +88,23 @@ def pagina_webhooks():
         )
         if eliminar_sr:
             render_tip(
-                "Se consultaran las visitas de la fecha indicada, se identificaran las excluidas "
+                "Se consultaran las visitas del rango indicado (max 7 dias), se identificaran las excluidas "
                 "y se les quitara la ruta, moviendo su fecha a 2020-01-01."
             )
-            fecha_limpieza = st.date_input("Fecha de las visitas a limpiar", key="wh_fecha_limpieza")
+            col_desde, col_hasta = st.columns(2)
+            with col_desde:
+                fecha_desde = st.date_input("Desde", key="wh_fecha_desde")
+            with col_hasta:
+                fecha_hasta = st.date_input("Hasta", key="wh_fecha_hasta")
+            if fecha_desde and fecha_hasta:
+                if fecha_hasta < fecha_desde:
+                    st.error("La fecha 'Hasta' debe ser igual o posterior a 'Desde'")
+                    fecha_limpieza = None
+                elif (fecha_hasta - fecha_desde).days > 6:
+                    st.error("El rango no puede ser mayor a 7 dias")
+                    fecha_limpieza = None
+                else:
+                    fecha_limpieza = (fecha_desde, fecha_hasta)
 
     acciones_sel = []
     if creacion:
@@ -142,10 +156,14 @@ def pagina_webhooks():
             token_key = webhook.ACCOUNT_TOKENS[cuenta]
             token = load_secret(token_key, f"Token de {cuenta} no encontrado en secrets (api_config.{token_key})")
 
-            fecha_str = fecha_limpieza.strftime("%Y-%m-%d")
-            with st.spinner("Consultando visitas de la fecha..."):
+            fecha_desde, fecha_hasta = fecha_limpieza
+            total_dias = (fecha_hasta - fecha_desde).days + 1
+            visitas = []
+            with st.spinner(f"Consultando visitas ({total_dias} dia{'s' if total_dias > 1 else ''})..."):
                 try:
-                    visitas = webhook.obtener_visitas_fecha(token, fecha_str)
+                    for i in range(total_dias):
+                        fecha_str = (fecha_desde + timedelta(days=i)).strftime("%Y-%m-%d")
+                        visitas.extend(webhook.obtener_visitas_fecha(token, fecha_str))
                 except Exception as e:
                     st.error(f"Error al consultar visitas: {e}")
                     st.stop()
@@ -155,15 +173,16 @@ def pagina_webhooks():
             visitas_a_limpiar = [v for v in visitas if v.get("reference") in refs_excluidos]
             no_encontrados = refs_excluidos - refs_encontrados
 
+            rango_txt = fecha_desde.strftime("%Y-%m-%d") if total_dias == 1 else f"{fecha_desde.strftime('%Y-%m-%d')} a {fecha_hasta.strftime('%Y-%m-%d')}"
             if no_encontrados:
-                st.warning(f"{len(no_encontrados)} visitas no encontradas en la fecha {fecha_str}")
+                st.warning(f"{len(no_encontrados)} visitas no encontradas en {rango_txt}")
                 with st.expander("Ver visitas no encontradas"):
                     st.code("\n".join(sorted(no_encontrados)))
 
             if not visitas_a_limpiar:
                 pass
             else:
-                st.info(f"{len(visitas_a_limpiar)} de {len(items)} visitas encontradas en la fecha {fecha_str}")
+                st.info(f"{len(visitas_a_limpiar)} de {len(items)} visitas encontradas en {rango_txt}")
 
                 total_l = len(visitas_a_limpiar)
                 exitosos_l = 0
