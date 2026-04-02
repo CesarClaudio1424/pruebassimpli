@@ -7,7 +7,7 @@ from utils import (
     render_header, render_guide, render_stat, render_label,
     render_tip, render_error_item, render_cuenta_badge,
     create_progress_tracker, update_progress, finish_progress,
-    load_secret,
+    scroll_to_bottom, load_secret,
 )
 
 
@@ -212,6 +212,7 @@ def pagina_webhooks():
                     st.success(f"{exitosos_l} de {total_l} visitas limpiadas en SimpliRoute")
                 if exitosos_l < total_l:
                     st.error(f"{total_l - exitosos_l} visitas no se pudieron limpiar")
+            scroll_to_bottom()
     else:
         operaciones = []
         if creacion:
@@ -250,3 +251,4 @@ def pagina_webhooks():
             st.success(f"{exitosos} de {total} procesados correctamente")
         if fallidos:
             st.error(f"{len(fallidos)} de {total} fallaron")
+        scroll_to_bottom()

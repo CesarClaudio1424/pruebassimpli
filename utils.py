@@ -73,6 +73,13 @@ def finish_progress(barra):
     barra.progress(1.0, text="Finalizado")
 
 
+def scroll_to_bottom():
+    st.markdown(
+        '<script>window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"});</script>',
+        unsafe_allow_html=True,
+    )
+
+
 def _update_counter(contador, current, total):
     contador.markdown(
         f'<div class="sr-stat" style="padding:0.4rem 0.6rem;">'
