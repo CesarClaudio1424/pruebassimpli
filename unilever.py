@@ -78,14 +78,27 @@ def _enviar_visitas(bloque, token):
         return 0, f"Error de conexion: {str(e)}"
 
 
+def _to_number(value):
+    if value is None:
+        return None
+    try:
+        return float(str(value).strip().replace(",", "."))
+    except (ValueError, TypeError):
+        return None
+
+
 def _construir_payload(visita_api, row_maestro, es_monterrey):
     payload = {
         "id": visita_api["id"],
         "title": visita_api.get("title", ""),
         "address": visita_api.get("address", ""),
-        "load_2": row_maestro.get("load_2", ""),
-        "load_3": row_maestro.get("load_3", ""),
     }
+    load_2 = _to_number(row_maestro.get("load_2", ""))
+    load_3 = _to_number(row_maestro.get("load_3", ""))
+    if load_2 is not None:
+        payload["load_2"] = load_2
+    if load_3 is not None:
+        payload["load_3"] = load_3
     if es_monterrey:
         if row_maestro.get("window_start"):
             payload["window_start"] = row_maestro["window_start"]
@@ -136,7 +149,7 @@ def pagina_unilever():
     maestro_dict = {}
     for row in datos_maestro:
         ref = row.get("ID", "").strip()
-        if ref:
+        if ref and ref.lower() != "none":
             maestro_dict[ref] = row
 
     with st.expander(f"Vista previa maestro ({len(datos_maestro)} filas)"):
@@ -202,7 +215,7 @@ def pagina_unilever():
                     st.error(f"El archivo de **{agencia}** debe tener la columna **ID**.")
                     continue
 
-                refs_agencia = [row.get("ID", "").strip() for row in datos if row.get("ID", "").strip()]
+                refs_agencia = [row.get("ID", "").strip() for row in datos if row.get("ID", "").strip() and row.get("ID", "").strip().lower() != "none"]
                 archivos_agencia[agencia] = refs_agencia
                 matches = sum(1 for ref in refs_agencia if ref in maestro_dict)
 
@@ -273,7 +286,10 @@ def pagina_unilever():
         # 2) Construir mapa reference -> visita desde la API
         api_ref_map = {}
         for v in visitas_api:
-            ref = str(v.get("reference", "")).strip()
+            ref_val = v.get("reference")
+            if ref_val is None:
+                continue
+            ref = str(ref_val).strip()
             if ref:
                 api_ref_map[ref] = v
 
