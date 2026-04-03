@@ -37,8 +37,8 @@ def _leer_xlsx(archivo):
 _COLUMN_MAP = {
     "carga 2": "load_2", "carga2": "load_2", "load 2": "load_2",
     "carga 3": "load_3", "carga3": "load_3", "load 3": "load_3",
-    "ventana inicio": "window_start", "inicio": "window_start", "window start": "window_start",
-    "ventana fin": "window_end", "fin": "window_end", "window end": "window_end",
+    "ventana inicio": "window_start", "inicio": "window_start", "window start": "window_start", "hora inicial": "window_start",
+    "ventana fin": "window_end", "fin": "window_end", "window end": "window_end", "hora final": "window_end",
 }
 
 
