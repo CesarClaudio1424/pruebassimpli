@@ -113,7 +113,7 @@ def pagina_unilever():
 
     render_guide(
         steps=[
-            '<strong>Sube el archivo maestro (Ruteo Dinámico)</strong> — CSV con columnas <code>ID</code>, <code>load_2</code>, <code>load_3</code> y opcionalmente <code>window_start</code>, <code>window_end</code>.',
+            '<strong>Sube el archivo maestro (Ruteo Dinámico)</strong> — CSV o Excel con columnas <code>ID</code>, <code>load_2</code>, <code>load_3</code> y opcionalmente <code>window_start</code>, <code>window_end</code>.',
             '<strong>Selecciona la fecha del ruteo</strong> — Se consultaran las visitas de esa fecha en cada cuenta para obtener los IDs de SimpliRoute.',
             '<strong>Sube los archivos por agencia</strong> — Cada agencia tiene su propio cuadro. El Excel (.xlsx) debe tener la columna <code>ID</code>.',
             '<strong>Procesa la edicion</strong> — Se cruzan los <code>ID</code> del archivo de agencia con el maestro y el <code>reference</code> de la API. Se actualizan <code>load_2</code> y <code>load_3</code>. Para <strong>Monterrey</strong> tambien ventanas horarias.',
@@ -124,20 +124,23 @@ def pagina_unilever():
     # --- Paso 1: Archivo maestro ---
     render_label("Paso 1 · Archivo maestro (Ruteo Dinámico)")
     archivo_maestro = st.file_uploader(
-        "Ruteo Dinámico", type=["csv"], label_visibility="collapsed",
-        help="CSV con ID, load_2, load_3, window_start, window_end",
+        "Ruteo Dinámico", type=["csv", "xlsx"], label_visibility="collapsed",
+        help="CSV o Excel con ID, load_2, load_3, window_start, window_end",
         key="unilever_maestro",
     )
 
     if not archivo_maestro:
         render_tip(
-            'Sube el archivo <strong>Ruteo Dinámico</strong> (CSV). Debe tener al menos la columna '
+            'Sube el archivo <strong>Ruteo Dinámico</strong> (CSV o Excel). Debe tener al menos la columna '
             '<code>ID</code> junto con <code>load_2</code>, <code>load_3</code> y opcionalmente '
             '<code>window_start</code>, <code>window_end</code>.'
         )
         st.stop()
 
-    datos_maestro = _leer_csv(archivo_maestro)
+    if archivo_maestro.name.endswith(".xlsx"):
+        datos_maestro = _leer_xlsx(archivo_maestro)
+    else:
+        datos_maestro = _leer_csv(archivo_maestro)
     if not datos_maestro:
         st.error("El archivo maestro esta vacio o no se pudo leer.")
         st.stop()
