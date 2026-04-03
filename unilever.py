@@ -35,10 +35,15 @@ def _leer_xlsx(archivo):
 
 
 _COLUMN_MAP = {
+    # Archivo 4 (Ruteo Dinámico)
     "carga 2": "load_2", "carga2": "load_2", "load 2": "load_2",
     "carga 3": "load_3", "carga3": "load_3", "load 3": "load_3",
     "ventana inicio": "window_start", "inicio": "window_start", "window start": "window_start", "hora inicial": "window_start",
     "ventana fin": "window_end", "fin": "window_end", "window end": "window_end", "hora final": "window_end",
+    # Archivo 1 (Monitoreo de Pedidos)
+    "código": "ID", "codigo": "ID",
+    "total + impuestos": "load_2", "total+impuestos": "load_2",
+    "cant. pedido": "load_3", "cant pedido": "load_3",
 }
 
 
@@ -125,6 +130,14 @@ def _construir_payload(visita_api, row_maestro, es_monterrey):
 
 def pagina_unilever():
     render_header("Unilever", "Actualiza cargas y ventanas horarias por agencia")
+
+    tipo_archivo = st.radio(
+        "Tipo de archivo maestro",
+        options=["Archivo 4 — Ruteo Dinámico", "Archivo 1 — Monitoreo de Pedidos"],
+        horizontal=True,
+        key="unilever_tipo",
+    )
+    es_archivo_1 = tipo_archivo.startswith("Archivo 1")
 
     render_guide(
         steps=[
@@ -325,7 +338,7 @@ def pagina_unilever():
             if ref not in api_ref_map:
                 sin_match_api.append(ref)
                 continue
-            payloads.append(_construir_payload(api_ref_map[ref], maestro_dict[ref], es_monterrey))
+            payloads.append(_construir_payload(api_ref_map[ref], maestro_dict[ref], es_monterrey and not es_archivo_1))
 
         # Stats
         col1, col2, col3 = st.columns(3)
