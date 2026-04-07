@@ -500,7 +500,7 @@ def pagina_zonas_kml():
         chip_cols = st.columns(min(len(available_fields), 7))
         for i, field in enumerate(available_fields):
             with chip_cols[i % 7]:
-                label = "kml_name" if field == "kml_name" else ("#" if field == "n" else field)
+                label = "kml_name" if field == "kml_name" else ("N°" if field == "n" else field)
                 if st.button(label, key=f"kml_chip_{field}", use_container_width=True):
                     cur = st.session_state.get("kml_template", "")
                     sep = st.session_state.get("kml_sep_choice", " - ")
