@@ -28,7 +28,7 @@ def _headers(token):
 
 def buscar_por_reference(reference, token):
     """Returns (visita | None, req_info dict)."""
-    url = f"{API_BASE}/routes/visits/reference/{reference}"
+    url = f"{API_BASE}/routes/visits/reference/{reference}/"
     info = {"url": url, "status": None, "response": None}
     try:
         r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
@@ -39,6 +39,10 @@ def buscar_por_reference(reference, token):
             info["response"] = r.text
         if r.status_code == 200:
             data = r.json()
+            # Respuesta paginada: {"count": N, "results": [...]}
+            if isinstance(data, dict) and "results" in data:
+                results = data["results"]
+                return (results[0] if results else None), info
             if isinstance(data, list):
                 return (data[0] if data else None), info
             if isinstance(data, dict) and data.get("id"):
