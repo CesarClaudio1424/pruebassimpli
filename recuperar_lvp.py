@@ -16,7 +16,7 @@ FALLBACK_DAYS = 30
 @st.cache_data
 def cargar_cuentas():
     try:
-        df = pd.read_csv("cuentas.csv")
+        df = pd.read_csv("cuentas.csv", encoding="latin-1")
         return {
             nombre: {"id": str(id_), "token": str(token)}
             for nombre, id_, token in zip(df.nombre, df.id, df.token)
