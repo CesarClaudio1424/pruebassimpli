@@ -11,6 +11,77 @@ from utils import (
 
 ZONA_DELAY = 0.5  # seconds between zone creation requests
 
+# Spanish day name → English mapping (also handles abbreviations)
+_DIA_MAP = {
+    "LUNES": "Monday",
+    "LUN": "Monday",
+    "L": "Monday",
+    "MARTES": "Tuesday",
+    "MAR": "Tuesday",
+    "MA": "Tuesday",
+    "MIERCOLES": "Wednesday",
+    "MIÉRCOLES": "Wednesday",
+    "MIE": "Wednesday",
+    "MIÉ": "Wednesday",
+    "MI": "Wednesday",
+    "X": "Wednesday",
+    "JUEVES": "Thursday",
+    "JUE": "Thursday",
+    "J": "Thursday",
+    "VIERNES": "Friday",
+    "VIE": "Friday",
+    "V": "Friday",
+    "SABADO": "Saturday",
+    "SÁBADO": "Saturday",
+    "SAB": "Saturday",
+    "SÁB": "Saturday",
+    "S": "Saturday",
+    "DOMINGO": "Sunday",
+    "DOM": "Sunday",
+    "D": "Sunday",
+}
+
+_ALL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_DAY_ORDER = {d: i for i, d in enumerate(_ALL_DAYS)}
+
+
+def _parse_schedules(dia_value: str) -> list[str]:
+    """
+    Parse a Spanish day string into a list of English day names.
+    Examples:
+      "LUNES JUEVES"      → ["Monday", "Thursday"]
+      "LUNES A VIERNES"   → ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+      "TODOS LOS DIAS"    → all 7 days
+      "LUNES A SABADO"    → Mon–Sat
+    Returns [] if nothing can be parsed.
+    """
+    text = dia_value.upper().strip()
+
+    # Full-week shorthands
+    if any(kw in text for kw in ("TODOS", "TODA", "DIARIO", "DAILY")):
+        return list(_ALL_DAYS)
+
+    # Range: "X A Y"
+    if " A " in text:
+        parts = text.split(" A ", 1)
+        start = _DIA_MAP.get(parts[0].strip())
+        end = _DIA_MAP.get(parts[1].strip())
+        if start and end:
+            si, ei = _DAY_ORDER[start], _DAY_ORDER[end]
+            if si <= ei:
+                return _ALL_DAYS[si: ei + 1]
+
+    # Space / comma separated list
+    tokens = [t.strip().rstrip(",") for t in text.replace(",", " ").split()]
+    days = [_DIA_MAP[t] for t in tokens if t in _DIA_MAP]
+    seen, unique = set(), []
+    for d in days:
+        if d not in seen:
+            seen.add(d)
+            unique.append(d)
+    return sorted(unique, key=lambda d: _DAY_ORDER[d])
+
+
 # KML namespaces to try
 _KML_NS = [
     "http://www.opengis.net/kml/2.2",
@@ -102,13 +173,15 @@ def _apply_name_template(zone: dict, template: str, index: int) -> str:
     return name.strip() or f"Zona {index}"
 
 
-def _crear_zona(token: str, name: str, coordinates: str) -> tuple[bool, str]:
+def _crear_zona(token: str, name: str, coordinates: str, schedules: list[str] | None = None) -> tuple[bool, str]:
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/json;charset=UTF-8",
         "accept": "application/json, text/plain, */*",
     }
-    payload = {"name": name, "coordinates": coordinates, "vehicles": []}
+    payload: dict = {"name": name, "coordinates": coordinates, "vehicles": []}
+    if schedules:
+        payload["schedules"] = schedules
     try:
         resp = requests.post(
             "https://api.simpliroute.com/v1/zones/",
@@ -260,18 +333,64 @@ def pagina_zonas_kml():
             inicio = st.number_input("Inicio", value=1, min_value=1, step=1, key="kml_inicio")
         nombres_finales = [f"{prefijo} {i + int(inicio)}" for i in range(len(zones))]
 
+    # --- Configuracion de dias (opcional) ---
+    # Auto-detect a field that looks like a day field
+    dia_field_default = next(
+        (k for k in all_attr_keys if "dia" in k.lower() or "día" in k.lower() or "day" in k.lower()),
+        None,
+    )
+    schedules_por_zona: list[list[str]] = [[] for _ in zones]
+
+    if all_attr_keys:
+        st.markdown("---")
+        usar_dias = st.checkbox(
+            "Configurar dias (schedules) desde el KML",
+            value=dia_field_default is not None,
+            key="kml_usar_dias",
+        )
+
+        if usar_dias:
+            campo_dia = st.selectbox(
+                "Campo de dias",
+                all_attr_keys,
+                index=all_attr_keys.index(dia_field_default) if dia_field_default else 0,
+                key="kml_campo_dia",
+            )
+
+            # Parse and preview
+            parsed_rows = []
+            for i, z in enumerate(zones):
+                raw = z["attrs"].get(campo_dia, "")
+                days = _parse_schedules(raw) if raw else []
+                schedules_por_zona[i] = days
+                parsed_rows.append({
+                    "N°": i + 1,
+                    "Nombre": nombres_finales[i],
+                    "Valor en KML": raw,
+                    "Dias (EN)": ", ".join(days) if days else "— sin parsear —",
+                })
+
+            with st.expander("Preview de dias por zona", expanded=True):
+                st.dataframe(parsed_rows, use_container_width=True, hide_index=True)
+
+            sin_dias = [r["N°"] for r in parsed_rows if "sin parsear" in r["Dias (EN)"]]
+            if sin_dias:
+                render_tip(
+                    f"<strong>⚠️ Atencion:</strong> No se pudieron parsear los dias de las zonas {sin_dias}. "
+                    "Se enviaran sin <code>schedules</code>.",
+                    warning=True,
+                )
+
     # --- Preview de zonas ---
     st.markdown("---")
     render_label("Preview de zonas")
 
-    preview_data = [
-        {
-            "N°": i + 1,
-            "Nombre": nombre,
-            "Puntos": len(z["coords"]),
-        }
-        for i, (z, nombre) in enumerate(zip(zones, nombres_finales))
-    ]
+    preview_data = []
+    for i, (z, nombre) in enumerate(zip(zones, nombres_finales)):
+        row = {"N°": i + 1, "Nombre": nombre, "Puntos": len(z["coords"])}
+        if any(schedules_por_zona):
+            row["Dias"] = ", ".join(schedules_por_zona[i]) if schedules_por_zona[i] else "—"
+        preview_data.append(row)
     st.dataframe(preview_data, use_container_width=True, hide_index=True)
 
     nombres_vacios = [i + 1 for i, n in enumerate(nombres_finales) if not n.strip()]
@@ -293,7 +412,8 @@ def pagina_zonas_kml():
 
     for i, (z, nombre) in enumerate(zip(zones, nombres_finales)):
         coords_str = _format_coordinates(z["coords"])
-        ok, detalle = _crear_zona(token, nombre, coords_str)
+        schedules = schedules_por_zona[i] if schedules_por_zona[i] else None
+        ok, detalle = _crear_zona(token, nombre, coords_str, schedules)
         procesados = i + 1
 
         if ok:
