@@ -109,7 +109,7 @@ def limpiar_visita(visita):
     visit_id = visita["id"]
     url = f"{API_BASE}/routes/visits/{visit_id}/"
     payload = {
-        "reference": None,
+        "reference": 0,
         "planned_date": None,
         "route": None,
         "title": visita.get("title") or "Unnamed",
