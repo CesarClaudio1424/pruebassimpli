@@ -151,7 +151,7 @@ streamlit run main.py
 ### SimpliRoute (Zonas KML)
 - `POST /v1/zones/` - Crear zona. Payload: `{ "name", "coordinates", "vehicles": [], "schedules": [] }`
 - `GET /v1/zones/` - Listar zonas de la cuenta (response: lista o `{results: [...]}`)
-- `DELETE /v1/zones/{id}/` - Eliminar zona por ID (204 o 200 = exito)
+- `DELETE /v1/zones/{id}` - Eliminar zona por ID (sin trailing slash; 204 o 200 = exito)
 - Auth: `Authorization: Token {API_TOKEN}` (token ingresado manualmente, no desde secrets)
 - `coordinates` es un string con formato Python: `[{'lat': '19.4','lng': '-99.1'},...]`
 - `schedules` siempre se incluye (lista vacia o dias en ingles: Monday, Tuesday, etc.)
@@ -159,18 +159,22 @@ streamlit run main.py
 
 ## Flujo: Zonas KML
 1. Usuario ingresa token de API
-2. Elige modo: **Crear zonas desde KML** o **Eliminar zonas de la cuenta**
+2. Elige modo via radio selector: **Crear zonas desde KML** o **Eliminar zonas de la cuenta**
 3. **Modo Crear:**
    - Sube archivo KML (exportado de Google My Maps u otra herramienta)
-   - Configura nombre de zona: usando atributos del KML (chips clicables para componer plantilla) o nombre generico secuencial
-   - Opcionalmente configura schedules desde un campo de dia del KML (soporta rangos "LUNES A VIERNES", listas, "TODOS LOS DIAS"; formato abreviado L-M-X-J-V-S-D)
+   - Configura nombre: chips clicables para componer plantilla con atributos del KML, o nombre generico secuencial
+   - Chip "N°" = numero secuencial `{n}` (era "#" pero quedaba en blanco por conflicto con markdown de Streamlit)
+   - Opcionalmente configura schedules desde un campo de dia del KML (rangos "LUNES A VIERNES", listas, "TODOS LOS DIAS"; formato abreviado L-M-X-J-V-S-D)
    - Preview de zonas antes de enviar
-   - Crea zonas una por una via POST con delay de 0.5s
+   - Procesa una zona por rerun via POST; barra de progreso + boton Cancelar aparecen al fondo de la pagina
+   - Errores en expanders con el detalle del response
 4. **Modo Eliminar:**
-   - Carga zonas existentes de la cuenta via GET
-   - Multiselect con todas las zonas seleccionadas por defecto
+   - Boton "Leer zonas de la cuenta" → GET /v1/zones/
+   - Multiselect con todas las zonas seleccionadas por defecto (formato "nombre (#id)")
    - Checkbox de confirmacion antes de eliminar
-   - Elimina una por una via DELETE con delay de 0.5s
+   - Procesa una zona por rerun via DELETE; barra de progreso + boton Cancelar aparecen al fondo
+   - Errores en expanders con URL del request y body del response
+- El Cancelar funciona entre reruns: detiene el siguiente item, puede eliminar/crear 1 extra despues del clic
 
 ## Flujo: Unilever
 1. Usuario elige tipo de archivo maestro: **Archivo 4** (Ruteo Dinámico) o **Archivo 1** (Monitoreo de Pedidos)
