@@ -1,57 +1,53 @@
-nombre,id
-Liverpool Acapulco,31145
-Liverpool Aguascalientes,29522
-Liverpool Bodega Central 125 Liverpool,44343
-Liverpool Cancun,29547
-Liverpool CAT,34402
-Liverpool Chetumal,31156
-Liverpool Chihuahua,31150
-Liverpool Coatzacoalcos,31153
-Liverpool Coordinadores,39593
-Liverpool Cordoba,31449
-Liverpool Cuernavaca,29885
-Liverpool Culiacan,29671
-Liverpool Durango,31692
-Liverpool GDL,23917
-Liverpool Hermosillo,31151
-Liverpool Istmo,32155
-Liverpool Juarez,31152
-Liverpool La Paz,12494
-Liverpool Leon,28301
-Liverpool Mazatlan,31142
-Liverpool Metepec,29016
-Liverpool Mexicalli,31143
-Liverpool Merida,29638
-Liverpool Monterrey BT,29298
-Liverpool Monterrey PQ,28922
-Liverpool Morelia,29552
-Liverpool Oaxaca,31147
-Liverpool Obregon,31723
-Liverpool Pachuca,31155
-Liverpool Poza Rica,31164
-Liverpool Puebla,25327
-Liverpool Puerto Vallarta,31144
-Liverpool Queretaro,25865
-Liverpool San Luis Potosi,31157
-Liverpool Tacubaya BT,28664
-Liverpool Tacubaya PQ,28763
-Liverpool Tampico,29433
-Liverpool Tapachula,31146
-Liverpool tepic,31141
-Liverpool Tepozpark,24999
-Liverpool Tiendas,39593
-Liverpool Tiendas 1,54198
-Liverpool Tiendas 2,54580
-Liverpool Tiendas 3,55135
-Liverpool Tiendas 4,55520
-Liverpool Tiendas 5,55877
-Liverpool Tiendas 6,55878
-Liverpool Tijuana,76583
-Liverpool Torreon,31165
-Liverpool Tuxtla,29668
-Liverpool Veracruz BT,30738
-Liverpool Veracruz PQ,28947
-Liverpool Victoria,31154
-Liverpool Villa Hermosa,28186
-Liverpool Xalapa,30610
-Liverpool Zona Norte 185,28723
+nombre,id,token
+Liverpool La Paz,12494,b4b11e9a9bdf353fd9a5adfa09ac3c7ee0fa2de1
+Liverpool GDL,23917,1b234c70b4c72695996d11e589b26ad154db2a49
+Liverpool Tepozpark,24999,aa250254625b76b5117d6a37fbfeafe6d64265f8
+Liverpool Puebla,25327,e1629f2f0a658554e760ea0e77a88a3805b45d01
+Liverpool Querétaro,25865,90fe541aa02817093db23642ba79958b49d3bfb4
+Liverpool Villa Hermosa,28186,b3735e309502f84c35c71782f6a2a27186ef7ff4
+Liverpool León,28301,0c4f7ba9eac3012dc54cab9d39548527e8f38706
+Liverpool Tacubaya BT,28664,169503d56d9fe3d5a73447e93e7f95178f239ab8
+Liverpool Zona Norte 185,28723,1b25bbc17ee36626e34587b1ae4559484cb6180c
+Liverpool Tacubaya PQ,28763,7f10712def63add04b99965d7c657822a58963f5
+Liverpool Monterrey PQ,28922,b5900e05f6029969519f99d6edc872aa7ef920de
+Liverpool Veracruz PQ,28947,a60ae121b8b1dc588dc621e85125a42df822244f
+Liverpool Metepec,29016,8798b11e6f3f6a967f90552bdf5f913c2859f9f8
+Liverpool Monterrey BT,29298,1d9314c8cffa8c1cd03aeaa52be4edd5e77aaf7e
+Liverpool Tampico,29433,10ff3c9e5cbb7cc8f9f76e90b24911e6a99b73d0
+Liverpool Aguascalientes,29522,69fd43f320c736b6baa763535ed0db6bff87d736
+Liverpool Cancún,29547,723140d3a1cbbfc2d8d8880fd24355694b3dea5a
+Liverpool Morelia,29552,07ce4b83c109b6d11f9a585dec9008c07547c5ac
+Liverpool Mérida,29638,0bf090c042883e89ec50a23bb3dd1deaf89fa328
+Liverpool Tuxtla,29668,3a3971920bebede8087238756ee88f759e3b5a5b
+Liverpool Culiacán,29671,861a1956449f0bc719d74f2e164af473f21aaae6
+Liverpool Cuernavaca,29885,4c5b045f52109de1ce8acc3330a49868b2197930
+Liverpool Xalapa,30610,76e24a564e5ad5155c0859c720112ee65652e21e
+Liverpool Veracruz BT,30738,429412f0244825a56508c3343ea02c8cb91fbde9
+Liverpool tepic,31141,380289ab759e8bffc53c97eb184242379bcf6c36
+Liverpool Mazatlan,31142,f44befc17fed6744a4399183193e7f2134c3093d
+Liverpool Mexicalli,31143,b230dbf6bf5a6466b52bd7a0d008971058ae4d16
+Liverpool Puerto Vallarta,31144,99950427fc92ae73c0590b41bdca550a7221268d
+Liverpool Acapulco,31145,f03b6cb864c4b31f76c77655317c9fee7d086612
+Liverpool Tapachula,31146,cea92ab69b574ddcff235f995b2b43939880250e
+Liverpool Oaxaca,31147,6654db46278c3362164f8609f236e29cefcd62c2
+Liverpool Chihuahua,31150,b36062e2695c5f55d16388842b17d499689ddd40
+Liverpool Hermosillo,31151,7a74aec2fe0635450c2dc56fd29d6fb230770590
+Liverpool Juarez,31152,5178e2b74671607d70eeead46bef52788d8a1b2c
+Liverpool Coatzacoalcos,31153,54ca9885f3119551d8b9b2c407fa635783cc4aab
+Liverpool Victoria,31154,d72b03fea7e0501933ac3e4e08cf86361542c382
+Liverpool Pachuca,31155,255680ce77b16edb7403602548c172ab5639ba48
+Liverpool Chetumal,31156,cff5e14d678a4b92bccf5dcc0df7b0ec9c6d4494
+Liverpool San Luis Potosi,31157,ccba0a92eac49c9431e6060903f7e58624d302a3
+Liverpool Poza Rica,31164,282f178e123da20273655f6fa54cb2fefd4d33a6
+Liverpool Torreon,31165,0b08ef50ed091e7d5aae289333f2d297b3cc8fc2
+Liverpool Cordoba,31449,4a234abfd2d379f1db7abf4f876a7a76a529bd12
+Liverpool Durango,31692,ffb721e665e73b8d96ed15cb020bfe09498000c8
+Liverpool Obregón,31723,18f3823fd579eaabe5fbad05eb57201e911f30e5
+Liverpool Istmo,32155,db8d81f1dc9e9585c7ac7b85203ec633d6a799c8
+Liverpool CAT,34402,18149ce6611b710a1e92b572bd7699cfeac0c1ff
+Liverpool Coordinadores,39593,0162313dd342fc4cd45bafadf54a4570e56b2b4b
+Liverpool Bodega Central 125 Liverpool,44343,b1c1369377babd068292868ca6fa356dbed1415f
+Liverpool Tiendas,39593,0162313dd342fc4cd45bafadf54a4570e56b2b4b
+Liverpool Tiendas 6,55878,cd0524c907a2f919485d3de29713fdd776d2402d
+Liverpool Tijuana,76583,643c8d43045cb87136c2e7d739f5206d82f5fc0d
+Liverpool Istmo,32155,db8d81f1dc9e9585c7ac7b85203ec633d6a799c8
