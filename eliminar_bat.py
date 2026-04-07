@@ -17,6 +17,8 @@ def _headers():
     return {"Authorization": f"Token {BAT_TOKEN}", "Content-Type": "application/json"}
 
 
+# --- Busqueda por Reference ---
+
 def buscar_por_reference(reference):
     """Returns (visita | None, req_info dict)."""
     url = f"{API_BASE}/routes/visits/reference/{reference}/"
@@ -79,6 +81,30 @@ def buscar_por_fechas(reference):
     return resultado, info
 
 
+# --- Busqueda por ID ---
+
+def buscar_por_id(visit_id):
+    """Returns (visita | None, req_info dict)."""
+    url = f"{API_BASE}/routes/visits/{visit_id}/"
+    info = {"url": url, "status": None, "response": None}
+    try:
+        r = requests.get(url, headers=_headers(), timeout=REQUEST_TIMEOUT)
+        info["status"] = r.status_code
+        try:
+            info["response"] = r.json()
+        except Exception:
+            info["response"] = r.text
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, dict) and data.get("id"):
+                return data, info
+    except requests.exceptions.RequestException as e:
+        info["response"] = str(e)
+    return None, info
+
+
+# --- PUT limpieza ---
+
 def limpiar_visita(visit_id):
     url = f"{API_BASE}/routes/visits/{visit_id}"
     try:
@@ -93,59 +119,103 @@ def limpiar_visita(visit_id):
         return 0, str(e)
 
 
+# --- Pagina ---
+
 def pagina_eliminar_bat():
     render_header(
         "Eliminar Visitas BAT",
-        "Busca visitas por referencia y limpia su reference, fecha y ruta asignada",
+        "Busca visitas por referencia o ID y limpia su reference, fecha y ruta asignada",
     )
 
     render_guide(
         steps=[
-            "<strong>Ingresa las referencias</strong> — Una por linea.",
-            "<strong>Buscar</strong> — Se busca primero por referencia directa; si no aparece, se escanea un rango de \u00b130 dias en paralelo.",
-            "<strong>Eliminar</strong> — Confirma y se envia un PUT por cada visita encontrada vaciando reference, planned_date y route.",
+            "<strong>Selecciona el modo</strong> — Por <em>Reference</em>: busqueda directa + fallback \u00b130 dias. Por <em>ID</em>: consulta directa al endpoint de la visita.",
+            "<strong>Ingresa los valores</strong> — Uno por linea.",
+            "<strong>Buscar</strong> — Verifica que las visitas existen antes de procesar.",
+            "<strong>Eliminar</strong> — Se envia un PUT por cada visita encontrada vaciando reference, planned_date y route.",
         ],
         tip="El token de BAT esta configurado de forma fija. No es necesario ingresar credenciales.",
     )
 
-    render_label("Referencias a eliminar")
-    referencias_raw = st.text_area(
-        "Referencias",
-        placeholder="9613078790\n9613078791\n9613078792",
-        height=160,
+    # --- Selector de modo ---
+    render_label("Modo de busqueda")
+    modo = st.radio(
+        "Modo",
+        ["Reference", "ID"],
+        horizontal=True,
         label_visibility="collapsed",
-        key="bat_referencias",
+        key="bat_modo",
     )
 
-    referencias = [r.strip() for r in referencias_raw.splitlines() if r.strip()]
+    # Limpiar resultados al cambiar de modo
+    modo_anterior = st.session_state.get("bat_modo_anterior")
+    if modo_anterior != modo:
+        st.session_state.pop("bat_resultados", None)
+        st.session_state.bat_modo_anterior = modo
+
+    # --- Input ---
+    if modo == "Reference":
+        render_label("Referencias")
+        valores_raw = st.text_area(
+            "Referencias",
+            placeholder="9613078790\n9613078791\n9613078792",
+            height=160,
+            label_visibility="collapsed",
+            key="bat_valores",
+        )
+    else:
+        render_label("IDs de visita")
+        valores_raw = st.text_area(
+            "IDs",
+            placeholder="819028155\n819028156\n819028157",
+            height=160,
+            label_visibility="collapsed",
+            key="bat_valores",
+        )
+
+    valores = [v.strip() for v in valores_raw.splitlines() if v.strip()]
 
     st.markdown("---")
 
     # --- Boton Buscar ---
     if st.button("Buscar visitas", key="btn_bat_buscar"):
-        if not referencias:
-            st.warning("Ingresa al menos una referencia.")
+        if not valores:
+            st.warning(f"Ingresa al menos un {'reference' if modo == 'Reference' else 'ID'}.")
         else:
             st.session_state.pop("bat_resultados", None)
-            total = len(referencias)
+            total = len(valores)
             barra = st.progress(0, text="Buscando...")
             resultados = []
 
-            for i, reference in enumerate(referencias):
-                barra.progress((i + 0.3) / total, text=f"Buscando referencia {reference}...")
-                visita, req_ref = buscar_por_reference(reference)
+            for i, valor in enumerate(valores):
+                if modo == "Reference":
+                    barra.progress((i + 0.3) / total, text=f"Buscando referencia {valor}...")
+                    visita, req_principal = buscar_por_reference(valor)
 
-                req_fallback = None
-                if not visita:
-                    barra.progress((i + 0.7) / total, text=f"Fallback fechas {reference}...")
-                    visita, req_fallback = buscar_por_fechas(reference)
+                    req_fallback = None
+                    if not visita:
+                        barra.progress((i + 0.7) / total, text=f"Fallback fechas {valor}...")
+                        visita, req_fallback = buscar_por_fechas(valor)
 
-                resultados.append({
-                    "reference": reference,
-                    "visita": visita,
-                    "req_ref": req_ref,
-                    "req_fallback": req_fallback,
-                })
+                    resultados.append({
+                        "valor": valor,
+                        "modo": "Reference",
+                        "visita": visita,
+                        "req_principal": req_principal,
+                        "req_fallback": req_fallback,
+                    })
+                else:
+                    barra.progress((i + 0.5) / total, text=f"Buscando ID {valor}...")
+                    visita, req_principal = buscar_por_id(valor)
+
+                    resultados.append({
+                        "valor": valor,
+                        "modo": "ID",
+                        "visita": visita,
+                        "req_principal": req_principal,
+                        "req_fallback": None,
+                    })
+
                 barra.progress((i + 1) / total, text=f"{i+1}/{total} procesadas")
 
             barra.progress(1.0, text="Busqueda completada")
@@ -179,12 +249,14 @@ def pagina_eliminar_bat():
         else:
             icon, titulo_estado = "\u2717", "no encontrada"
 
-        with st.expander(f"{icon} Ref {r['reference']} — {titulo_estado}", expanded=not r["visita"]):
-            req_ref = r["req_ref"]
-            st.markdown("**Busqueda por referencia directa:**")
-            st.code(f"GET {req_ref['url']}", language="bash")
-            st.markdown(f"Status: `{req_ref['status']}`")
-            st.json(req_ref["response"])
+        prefijo = "Ref" if r["modo"] == "Reference" else "ID"
+        with st.expander(f"{icon} {prefijo} {r['valor']} — {titulo_estado}", expanded=not r["visita"]):
+            req_p = r["req_principal"]
+            label_busqueda = "Busqueda por referencia directa:" if r["modo"] == "Reference" else "Consulta por ID:"
+            st.markdown(f"**{label_busqueda}**")
+            st.code(f"GET {req_p['url']}", language="bash")
+            st.markdown(f"Status: `{req_p['status']}`")
+            st.json(req_p["response"])
 
             req_fb = r.get("req_fallback")
             if req_fb is not None:
@@ -215,11 +287,12 @@ def pagina_eliminar_bat():
     for i, r in enumerate(encontradas):
         visit_id = r["visita"]["id"]
         status, resp_text = limpiar_visita(visit_id)
+        prefijo = "Ref" if r["modo"] == "Reference" else "ID"
         if 200 <= status < 300:
             exitosos += 1
         else:
             with contenedor_errores:
-                render_error_item(f"Ref {r['reference']} (ID {visit_id}) — Error HTTP {status}: {resp_text}")
+                render_error_item(f"{prefijo} {r['valor']} (ID {visit_id}) — Error HTTP {status}: {resp_text}")
         update_progress(barra, contador, i + 1, total)
 
     finish_progress(barra)
