@@ -27,18 +27,25 @@ def _headers(token):
 
 
 def buscar_por_reference(reference, token):
+    """Returns (visita | None, req_info dict)."""
     url = f"{API_BASE}/routes/visits/reference/{reference}"
+    info = {"url": url, "status": None, "response": None}
     try:
         r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
+        info["status"] = r.status_code
+        try:
+            info["response"] = r.json()
+        except Exception:
+            info["response"] = r.text
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list):
-                return data[0] if data else None
+                return (data[0] if data else None), info
             if isinstance(data, dict) and data.get("id"):
-                return data
-    except requests.exceptions.RequestException:
-        pass
-    return None
+                return data, info
+    except requests.exceptions.RequestException as e:
+        info["response"] = str(e)
+    return None, info
 
 
 def _buscar_en_fecha(fecha_str, reference, token):
@@ -48,43 +55,56 @@ def _buscar_en_fecha(fecha_str, reference, token):
         if r.status_code == 200:
             for v in (r.json() or []):
                 if str(v.get("reference", "")) == str(reference):
-                    return v
+                    return v, fecha_str
     except requests.exceptions.RequestException:
         pass
-    return None
+    return None, fecha_str
 
 
 def buscar_por_fechas(reference, token):
+    """Returns (visita | None, fallback_info dict)."""
     hoy = date.today()
     fechas = [
         (hoy + timedelta(days=d)).strftime("%Y-%m-%d")
         for d in range(-FALLBACK_DAYS, FALLBACK_DAYS + 1)
     ]
+    info = {"total_fechas": len(fechas), "fecha_encontrada": None, "url": None, "response": None}
+
     executor = ThreadPoolExecutor(max_workers=10)
     futures = {executor.submit(_buscar_en_fecha, f, reference, token): f for f in fechas}
     resultado = None
     for future in as_completed(futures):
-        r = future.result()
-        if r:
-            resultado = r
+        visita, fecha_str = future.result()
+        if visita:
+            resultado = visita
+            info["fecha_encontrada"] = fecha_str
+            info["url"] = f"{API_BASE}/routes/visits/?planned_date={fecha_str}"
+            info["response"] = visita
             break
     executor.shutdown(wait=False)
-    return resultado
+    return resultado, info
 
 
 def obtener_ruta_id(vehiculo_nombre, fecha_str, token):
+    """Returns (route_id | None, req_info dict)."""
     url = f"{API_BASE}/plans/{fecha_str}/vehicles/"
+    info = {"url": url, "status": None, "response_match": None, "response_full": None}
     try:
         r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
+        info["status"] = r.status_code
         if r.status_code == 200:
-            for v in (r.json() or []):
+            vehiculos = r.json() or []
+            for v in vehiculos:
                 if v.get("name", "").strip().lower() == vehiculo_nombre.strip().lower():
                     rutas = v.get("routes", [])
                     if rutas:
-                        return rutas[0]["id"]
-    except requests.exceptions.RequestException:
-        pass
-    return None
+                        info["response_match"] = v
+                        return rutas[0]["id"], info
+            info["response_full"] = vehiculos
+    except requests.exceptions.RequestException as e:
+        info["status"] = 0
+        info["response_full"] = str(e)
+    return None, info
 
 
 def asignar_visita(visit_id, route_id, planned_date, token):
@@ -96,9 +116,18 @@ def asignar_visita(visit_id, route_id, planned_date, token):
             json={"route": route_id, "planned_date": planned_date},
             timeout=REQUEST_TIMEOUT,
         )
-        return r.status_code
-    except requests.exceptions.RequestException:
-        return 0
+        return r.status_code, r.text
+    except requests.exceptions.RequestException as e:
+        return 0, str(e)
+
+
+def _mostrar_req_response(label, url, status, response):
+    st.markdown(f"**{label}**")
+    st.code(f"GET {url}", language="bash")
+    if status is not None:
+        st.markdown(f"Status: `{status}`")
+    if response is not None:
+        st.json(response)
 
 
 def pagina_recuperar_lvp():
@@ -213,13 +242,15 @@ def pagina_recuperar_lvp():
                 fecha_display = fila["fecha"].strftime("%d/%m/%Y")
 
                 barra_buscar.progress((i + 0.3) / total_busqueda, text=f"Buscando referencia {reference}...")
-                visita = buscar_por_reference(reference, token)
+                visita, req_ref = buscar_por_reference(reference, token)
+
+                req_fallback = None
                 if not visita:
                     barra_buscar.progress((i + 0.6) / total_busqueda, text=f"Fallback fechas {reference}...")
-                    visita = buscar_por_fechas(reference, token)
+                    visita, req_fallback = buscar_por_fechas(reference, token)
 
                 barra_buscar.progress((i + 0.9) / total_busqueda, text=f"Buscando ruta para {vehiculo}...")
-                route_id = obtener_ruta_id(vehiculo, fecha_str, token) if visita else None
+                route_id, req_veh = obtener_ruta_id(vehiculo, fecha_str, token) if visita else (None, None)
 
                 resultados.append({
                     "reference": reference,
@@ -228,6 +259,9 @@ def pagina_recuperar_lvp():
                     "fecha_display": fecha_display,
                     "visita": visita,
                     "route_id": route_id,
+                    "req_ref": req_ref,
+                    "req_fallback": req_fallback,
+                    "req_veh": req_veh,
                 })
                 barra_buscar.progress((i + 1) / total_busqueda, text=f"{i+1}/{total_busqueda} procesadas")
 
@@ -269,24 +303,48 @@ def pagina_recuperar_lvp():
 
     for r in resultados:
         if r["visita"] and r["route_id"]:
-            icon = "\u2713"
-            color = "#29AB55"
-            detalle = f"ID visita {r['visita']['id']} \u2192 ruta asignada el {r['fecha_display']}"
+            icon, color = "\u2713", "#29AB55"
+            titulo_estado = "lista"
         elif r["visita"]:
-            icon = "\u26a0"
-            color = "#f59e0b"
-            detalle = f"Visita encontrada (ID {r['visita']['id']}) pero vehiculo '{r['vehiculo']}' sin ruta el {r['fecha_display']}"
+            icon, color = "\u26a0", "#f59e0b"
+            titulo_estado = "visita ok / sin ruta"
         else:
-            icon = "\u2717"
-            color = "#d32f2f"
-            detalle = "No encontrada en SimpliRoute"
+            icon, color = "\u2717", "#d32f2f"
+            titulo_estado = "no encontrada"
 
-        st.markdown(
-            f'<div class="sr-result" style="border-left: 3px solid {color}; margin-bottom:0.4rem; padding:0.5rem 0.8rem;">'
-            f'<span style="color:{color}; font-weight:700;">{icon}</span> '
-            f'<strong>{r["reference"]}</strong> — {detalle}</div>',
-            unsafe_allow_html=True,
-        )
+        has_error = not r["visita"] or not r["route_id"]
+        label_expander = f"{icon} Ref {r['reference']} · {r['vehiculo']} · {r['fecha_display']} — {titulo_estado}"
+
+        with st.expander(label_expander, expanded=has_error):
+            # --- Busqueda por reference ---
+            req_ref = r["req_ref"]
+            st.markdown("**Busqueda por referencia directa:**")
+            st.code(f"GET {req_ref['url']}", language="bash")
+            st.markdown(f"Status: `{req_ref['status']}`")
+            st.json(req_ref["response"])
+
+            # --- Fallback por fechas ---
+            req_fb = r.get("req_fallback")
+            if req_fb is not None:
+                st.markdown(f"**Fallback — escaneadas {req_fb['total_fechas']} fechas (\u00b1{FALLBACK_DAYS} dias):**")
+                if req_fb["url"]:
+                    st.markdown(f"Encontrada el `{req_fb['fecha_encontrada']}`")
+                    st.code(f"GET {req_fb['url']}", language="bash")
+                    st.json(req_fb["response"])
+                else:
+                    st.markdown("No encontrada en ninguna fecha del rango.")
+
+            # --- Busqueda de ruta ---
+            req_veh = r.get("req_veh")
+            if req_veh:
+                st.markdown("**Busqueda de ruta por vehiculo:**")
+                st.code(f"GET {req_veh['url']}", language="bash")
+                st.markdown(f"Status: `{req_veh['status']}`")
+                if req_veh["response_match"]:
+                    st.json(req_veh["response_match"])
+                elif req_veh["response_full"] is not None:
+                    st.markdown("Vehiculo no encontrado. Vehiculos disponibles en esa fecha:")
+                    st.json(req_veh["response_full"])
 
     if not listos:
         st.stop()
@@ -302,12 +360,12 @@ def pagina_recuperar_lvp():
     barra, contador, contenedor_errores = create_progress_tracker(total, "Asignando visitas...")
 
     for i, r in enumerate(listos):
-        status = asignar_visita(r["visita"]["id"], r["route_id"], r["fecha_str"], token)
+        status, resp_text = asignar_visita(r["visita"]["id"], r["route_id"], r["fecha_str"], token)
         if 200 <= status < 300:
             exitosos += 1
         else:
             with contenedor_errores:
-                render_error_item(f"Ref {r['reference']} — Error al asignar (HTTP {status})")
+                render_error_item(f"Ref {r['reference']} — Error al asignar (HTTP {status}): {resp_text}")
         update_progress(barra, contador, i + 1, total)
 
     finish_progress(barra)
