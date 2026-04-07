@@ -107,7 +107,7 @@ def buscar_por_id(visit_id):
 
 def limpiar_visita(visita):
     visit_id = visita["id"]
-    url = f"{API_BASE}/routes/visits/{visit_id}"
+    url = f"{API_BASE}/routes/visits/{visit_id}/"
     payload = {
         "reference": None,
         "planned_date": None,
