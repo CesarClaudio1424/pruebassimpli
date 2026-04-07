@@ -18,8 +18,8 @@ def cargar_cuentas():
     try:
         df = pd.read_csv("cuentas.csv", encoding="utf-8-sig")
         return {
-            str(row.nombre).strip(): {"id": str(row.id).strip(), "token": str(row.token).strip()}
-            for row in df.itertuples()
+            str(row["nombre"]).strip(): {"id": str(row["id"]).strip(), "token": str(row["token"]).strip()}
+            for _, row in df.iterrows()
         }
     except FileNotFoundError:
         return None
