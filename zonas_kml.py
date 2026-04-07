@@ -1,3 +1,4 @@
+import time
 import xml.etree.ElementTree as ET
 import requests
 import streamlit as st
@@ -7,6 +8,8 @@ from utils import (
     render_error_item, create_progress_tracker, update_progress, finish_progress,
     render_stat,
 )
+
+ZONA_DELAY = 0.5  # seconds between zone creation requests
 
 # KML namespaces to try
 _KML_NS = [
@@ -35,13 +38,12 @@ def _findall(element, tag, namespaces):
 
 
 def _parse_kml_bytes(content: bytes) -> list[dict]:
-    """Parse KML content and return list of zone dicts with kml_name, attrs, coords."""
+    """Parse KML and return list of zone dicts with kml_name, attrs, coords."""
     try:
         root = ET.fromstring(content)
     except ET.ParseError as e:
         raise ValueError(f"KML invalido: {e}")
 
-    # Detect namespace from root tag
     ns_used = ""
     if root.tag.startswith("{"):
         ns_used = root.tag[1:root.tag.index("}")]
@@ -51,11 +53,9 @@ def _parse_kml_bytes(content: bytes) -> list[dict]:
     zones = []
 
     for pm in placemarks:
-        # Name
         name_el = _find(pm, "name", ns_list)
         kml_name = (name_el.text or "").strip() if name_el is not None else ""
 
-        # Extended attributes (Data or SimpleData)
         attrs = {}
         for data_el in _findall(pm, "Data", ns_list):
             key = data_el.get("name", "")
@@ -67,7 +67,6 @@ def _parse_kml_bytes(content: bytes) -> list[dict]:
             if key and sd_el.text:
                 attrs[key] = sd_el.text.strip()
 
-        # Coordinates (Polygon or LineString or Point — only Polygon makes sense for zones)
         coords_el = _find(pm, "coordinates", ns_list)
         if coords_el is None or not coords_el.text:
             continue
@@ -77,9 +76,7 @@ def _parse_kml_bytes(content: bytes) -> list[dict]:
             parts = point.split(",")
             if len(parts) >= 2:
                 try:
-                    lng = str(float(parts[0]))
-                    lat = str(float(parts[1]))
-                    coords.append({"lat": lat, "lng": lng})
+                    coords.append({"lat": str(float(parts[1])), "lng": str(float(parts[0]))})
                 except ValueError:
                     continue
 
@@ -92,13 +89,11 @@ def _parse_kml_bytes(content: bytes) -> list[dict]:
 
 
 def _format_coordinates(coords: list[dict]) -> str:
-    """Convert list of {lat, lng} dicts to SimpliRoute coordinates string."""
     parts = [f"{{'lat': '{c['lat']}','lng': '{c['lng']}'}}" for c in coords]
     return "[" + ",".join(parts) + "]"
 
 
 def _apply_name_template(zone: dict, template: str, index: int) -> str:
-    """Apply naming template to a zone. Supports {field} placeholders and {n} for index."""
     name = template
     for key, val in zone["attrs"].items():
         name = name.replace(f"{{{key}}}", val)
@@ -108,7 +103,6 @@ def _apply_name_template(zone: dict, template: str, index: int) -> str:
 
 
 def _crear_zona(token: str, name: str, coordinates: str) -> tuple[bool, str]:
-    """POST a single zone to SimpliRoute."""
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/json;charset=UTF-8",
@@ -140,16 +134,19 @@ def pagina_zonas_kml():
         steps=[
             "<strong>Token</strong> — Ingresa el token de la cuenta donde se crearan las zonas.",
             "<strong>Sube el KML</strong> — Exporta el archivo desde Google My Maps u otra herramienta. Puede tener multiples poligonos.",
-            "<strong>Configura el nombre</strong> — Usa los atributos del KML (ej. <code>{Zona} - {Ruta}</code>) o elige nombres genericos secuenciales.",
+            "<strong>Configura el nombre</strong> — Haz clic en los campos para componerlo o usa nombres genericos secuenciales.",
             "<strong>Revisa el preview</strong> — Confirma los nombres y cantidad de puntos antes de enviar.",
-            "<strong>Crea las zonas</strong> — Se envian una por una a la API. Solo se muestran los errores.",
+            "<strong>Crea las zonas</strong> — Se envian una por una con un intervalo de 0.5 s. Solo se muestran los errores.",
         ],
         tip="El archivo KML puede venir de Google My Maps (Exportar capa > KML). Cada poligono del KML se convierte en una zona de SimpliRoute.",
     )
 
     # --- Token ---
     render_label("Token de API")
-    token = st.text_input("Token", type="password", placeholder="5d1fe9e...", label_visibility="collapsed", key="kml_token")
+    token = st.text_input(
+        "Token", type="password", placeholder="5d1fe9e...",
+        label_visibility="collapsed", key="kml_token",
+    )
     if not token:
         render_tip("Ingresa el token de la cuenta SimpliRoute donde se crearan las zonas.")
         st.stop()
@@ -168,29 +165,37 @@ def pagina_zonas_kml():
         st.stop()
 
     if not zones:
-        st.warning("No se encontraron poligonos validos en el KML. Verifica que el archivo tenga Placemarks con coordenadas de poligono.")
+        st.warning("No se encontraron poligonos validos en el KML.")
         st.stop()
 
-    # Collect all attribute keys present in this KML
-    all_attr_keys = []
-    seen = set()
+    # Ordered list of attribute keys across all placemarks
+    all_attr_keys: list[str] = []
+    seen_keys: set[str] = set()
     for z in zones:
         for k in z["attrs"]:
-            if k not in seen:
+            if k not in seen_keys:
                 all_attr_keys.append(k)
-                seen.add(k)
+                seen_keys.add(k)
 
-    st.markdown(
-        render_stat(len(zones), "poligonos encontrados"),
-        unsafe_allow_html=True,
-    )
+    st.markdown(render_stat(len(zones), "poligonos encontrados"), unsafe_allow_html=True)
+
+    # --- Preview de campos (atributos del KML) ---
+    if all_attr_keys:
+        with st.expander("🔎 Preview de campos del KML", expanded=False):
+            rows = []
+            for i, z in enumerate(zones):
+                row = {"N°": i + 1, "kml_name": z["kml_name"]}
+                for k in all_attr_keys:
+                    row[k] = z["attrs"].get(k, "")
+                rows.append(row)
+            st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # --- Name configuration ---
     st.markdown("---")
     render_label("Configuracion de nombres")
 
     modo_nombre = st.radio(
-        "Modo de nombre",
+        "Modo",
         ["Usar atributos del KML", "Nombre generico secuencial"],
         horizontal=True,
         label_visibility="collapsed",
@@ -198,57 +203,84 @@ def pagina_zonas_kml():
     )
 
     if modo_nombre == "Usar atributos del KML":
-        if all_attr_keys:
-            campos_disponibles = ", ".join(f"`{{{k}}}`" for k in all_attr_keys)
-            if "kml_name" not in seen:
-                campos_disponibles += ", `{kml_name}`"
-            render_tip(f"Campos disponibles: {campos_disponibles}. Usa `{{n}}` para el numero de secuencia.")
-        else:
-            render_tip("El KML no tiene atributos extendidos. Solo puedes usar `{kml_name}` (nombre del Placemark) y `{n}` (numero de secuencia).")
 
-        template = st.text_input(
-            "Plantilla de nombre",
-            value="{kml_name}" if not all_attr_keys else (f"{{{all_attr_keys[0]}}}" if len(all_attr_keys) == 1 else f"{{{all_attr_keys[0]}}} - {{{all_attr_keys[1]}}}"),
-            placeholder="{Zona} - {Ruta}",
-            label_visibility="collapsed",
-            key="kml_template",
-        )
+        # Reset template when a new file is uploaded
+        file_id = getattr(kml_file, "file_id", kml_file.name)
+        if st.session_state.get("_kml_file_id") != file_id:
+            st.session_state["_kml_file_id"] = file_id
+            default = f"{{{all_attr_keys[0]}}}" if all_attr_keys else "{kml_name}"
+            st.session_state["kml_template"] = default
 
+        # Separator selector
+        available_fields = all_attr_keys + ["kml_name", "n"]
+        sep_options = [" - ", " | ", " ", "_"]
+
+        col_sep_label, col_sep = st.columns([1, 3])
+        with col_sep_label:
+            st.markdown('<div style="padding-top:0.55rem;">Separador</div>', unsafe_allow_html=True)
+        with col_sep:
+            sep_choice = st.selectbox(
+                "Separador",
+                sep_options,
+                label_visibility="collapsed",
+                key="kml_sep_choice",
+            )
+
+        # Clickable field chips
+        render_label("Campos disponibles — haz clic para agregar al nombre")
+        chip_cols = st.columns(min(len(available_fields), 7))
+        for i, field in enumerate(available_fields):
+            with chip_cols[i % 7]:
+                label = "kml_name" if field == "kml_name" else ("#" if field == "n" else field)
+                if st.button(label, key=f"kml_chip_{field}", use_container_width=True):
+                    cur = st.session_state.get("kml_template", "")
+                    sep = st.session_state.get("kml_sep_choice", " - ")
+                    st.session_state["kml_template"] = (cur + sep if cur.strip() else "") + f"{{{field}}}"
+                    st.rerun()
+
+        # Editable template + clear button
+        col_tpl, col_clear = st.columns([5, 1])
+        with col_tpl:
+            render_label("Nombre resultante")
+            st.text_input("Template", key="kml_template", label_visibility="collapsed")
+        with col_clear:
+            st.markdown('<div style="padding-top:1.85rem;"></div>', unsafe_allow_html=True)
+            if st.button("Limpiar", key="kml_clear", use_container_width=True):
+                st.session_state["kml_template"] = ""
+                st.rerun()
+
+        template = st.session_state.get("kml_template", "")
         nombres_finales = [_apply_name_template(z, template, i + 1) for i, z in enumerate(zones)]
 
     else:
         col_pref, col_start = st.columns([3, 1])
         with col_pref:
-            prefijo = st.text_input("Prefijo", value="Zona", label_visibility="visible", key="kml_prefijo")
+            prefijo = st.text_input("Prefijo", value="Zona", key="kml_prefijo")
         with col_start:
-            inicio = st.number_input("Inicio", value=1, min_value=1, step=1, label_visibility="visible", key="kml_inicio")
-
+            inicio = st.number_input("Inicio", value=1, min_value=1, step=1, key="kml_inicio")
         nombres_finales = [f"{prefijo} {i + int(inicio)}" for i in range(len(zones))]
 
-    # --- Preview ---
+    # --- Preview de zonas ---
     st.markdown("---")
     render_label("Preview de zonas")
 
-    preview_data = []
-    for i, (z, nombre) in enumerate(zip(zones, nombres_finales)):
-        preview_data.append({
+    preview_data = [
+        {
             "N°": i + 1,
             "Nombre": nombre,
             "Puntos": len(z["coords"]),
-            "Atributos": ", ".join(f"{k}: {v}" for k, v in z["attrs"].items()) if z["attrs"] else z["kml_name"],
-        })
-
+        }
+        for i, (z, nombre) in enumerate(zip(zones, nombres_finales))
+    ]
     st.dataframe(preview_data, use_container_width=True, hide_index=True)
 
-    # Check for duplicate or empty names
     nombres_vacios = [i + 1 for i, n in enumerate(nombres_finales) if not n.strip()]
-    nombres_duplicados = [n for n in nombres_finales if nombres_finales.count(n) > 1]
+    nombres_dup = list(dict.fromkeys(n for n in nombres_finales if nombres_finales.count(n) > 1))
 
     if nombres_vacios:
-        render_tip(f"<strong>⚠️ Atencion:</strong> Las zonas {nombres_vacios} tienen nombre vacio. Ajusta la plantilla.", warning=True)
-    if nombres_duplicados:
-        uniq_dup = list(dict.fromkeys(nombres_duplicados))
-        render_tip(f"<strong>⚠️ Atencion:</strong> Hay nombres duplicados: {uniq_dup}. SimpliRoute puede rechazarlos.", warning=True)
+        render_tip(f"<strong>⚠️ Atencion:</strong> Zona(s) {nombres_vacios} con nombre vacio. Ajusta la plantilla.", warning=True)
+    if nombres_dup:
+        render_tip(f"<strong>⚠️ Atencion:</strong> Nombres duplicados: {nombres_dup}. SimpliRoute puede rechazarlos.", warning=True)
 
     # --- Crear zonas ---
     st.markdown("---")
@@ -272,6 +304,9 @@ def pagina_zonas_kml():
 
         update_progress(barra, contador, procesados, total, "Creando zonas...")
 
+        if procesados < total:
+            time.sleep(ZONA_DELAY)
+
     finish_progress(barra)
 
     if exitosos == total:
@@ -279,4 +314,4 @@ def pagina_zonas_kml():
     elif exitosos > 0:
         st.warning(f"{exitosos} de {total} zonas creadas. Revisa los errores arriba.")
     else:
-        st.error(f"No se pudo crear ninguna zona. Revisa el token y los errores.")
+        st.error("No se pudo crear ninguna zona. Revisa el token y los errores.")
