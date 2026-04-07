@@ -238,7 +238,7 @@ def _listar_zonas(token: str) -> tuple[list[dict], str]:
 
 def _eliminar_zona_api(token: str, zone_id: int) -> tuple[bool, str, str]:
     """DELETE /v1/zones/{id}/. Returns (ok, url, error_detail)."""
-    url = f"https://api.simpliroute.com/v1/zones/{zone_id}/"
+    url = f"https://api.simpliroute.com/v1/zones/{zone_id}"
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/json;charset=UTF-8",
