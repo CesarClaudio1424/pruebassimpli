@@ -236,23 +236,20 @@ def _listar_zonas(token: str) -> tuple[list[dict], str]:
         return [], f"Error de conexion: {e}"
 
 
-def _eliminar_zona_api(token: str, zone_id: int) -> tuple[bool, str]:
-    """DELETE /v1/zones/{id}/."""
+def _eliminar_zona_api(token: str, zone_id: int) -> tuple[bool, str, str]:
+    """DELETE /v1/zones/{id}/. Returns (ok, url, error_detail)."""
+    url = f"https://api.simpliroute.com/v1/zones/{zone_id}/"
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/json;charset=UTF-8",
     }
     try:
-        resp = requests.delete(
-            f"https://api.simpliroute.com/v1/zones/{zone_id}/",
-            headers=headers,
-            timeout=REQUEST_TIMEOUT,
-        )
+        resp = requests.delete(url, headers=headers, timeout=REQUEST_TIMEOUT)
         if resp.status_code in (200, 204):
-            return True, ""
-        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return True, url, ""
+        return False, url, f"HTTP {resp.status_code}: {resp.text[:400]}"
     except requests.exceptions.RequestException as e:
-        return False, f"Error de conexion: {e}"
+        return False, url, f"Error de conexion: {e}"
 
 
 def _crear_zona(token: str, name: str, coordinates: str, schedules: list[str] | None = None) -> tuple[bool, str]:
@@ -320,11 +317,70 @@ def pagina_zonas_kml():
 
     if modo == "Eliminar zonas de la cuenta":
         st.markdown("---")
+
         # Clear cache if token changed
         if st.session_state.get("_kml_del_token") != token:
-            st.session_state.pop("_kml_zonas_lista", None)
+            for k in ("_kml_zonas_lista", "_kml_del_active", "_kml_del_queue",
+                      "_kml_del_total", "_kml_del_done", "_kml_del_errors"):
+                st.session_state.pop(k, None)
             st.session_state["_kml_del_token"] = token
 
+        # --- Sesion de eliminacion activa ---
+        if st.session_state.get("_kml_del_active"):
+            queue = st.session_state.get("_kml_del_queue", [])
+            total_del = st.session_state["_kml_del_total"]
+            procesados = total_del - len(queue)
+            errores_del: list[dict] = st.session_state["_kml_del_errors"]
+
+            # Progreso
+            st.progress(min(procesados / total_del, 1.0), text="Eliminando zonas...")
+            col_stat_del, col_cancel = st.columns([4, 1])
+            with col_stat_del:
+                st.markdown(render_stat(f"{procesados}/{total_del}", "procesadas"), unsafe_allow_html=True)
+            with col_cancel:
+                st.markdown('<div style="padding-top:1.4rem;"></div>', unsafe_allow_html=True)
+                if queue and st.button("Cancelar", key="kml_btn_cancelar", use_container_width=True):
+                    st.session_state["_kml_del_active"] = False
+                    st.session_state.pop("_kml_del_queue", None)
+                    done_so_far = st.session_state.get("_kml_del_done", 0)
+                    st.warning(f"Proceso cancelado. {done_so_far} zona(s) eliminadas antes de cancelar.")
+                    st.stop()
+
+            # Errores acumulados
+            for err_item in errores_del:
+                with st.expander(f"✗ {err_item['label']}", expanded=True):
+                    st.code(f"DELETE {err_item['url']}", language=None)
+                    st.code(err_item["detail"], language=None)
+
+            # Procesar siguiente o finalizar
+            if queue:
+                next_zone = queue[0]
+                ok_d, url_d, det_d = _eliminar_zona_api(token, next_zone["id"])
+                if ok_d:
+                    st.session_state["_kml_del_done"] += 1
+                else:
+                    st.session_state["_kml_del_errors"].append({
+                        "label": f"Zona \u00ab{next_zone['name']}\u00bb (#{next_zone['id']})",
+                        "url": url_d,
+                        "detail": det_d,
+                    })
+                st.session_state["_kml_del_queue"] = queue[1:]
+                time.sleep(ZONA_DELAY)
+                st.rerun()
+            else:
+                # Terminado
+                st.session_state["_kml_del_active"] = False
+                exitosos_del = st.session_state["_kml_del_done"]
+                st.session_state.pop("_kml_zonas_lista", None)
+                if exitosos_del == total_del:
+                    st.success(f"Todas las zonas eliminadas ({exitosos_del}/{total_del})")
+                elif exitosos_del > 0:
+                    st.warning(f"{exitosos_del} de {total_del} zonas eliminadas.")
+                else:
+                    st.error("No se pudo eliminar ninguna zona.")
+            st.stop()
+
+        # --- Lista de zonas ---
         if st.button("Leer zonas de la cuenta", key="kml_btn_cargar_zonas"):
             zonas_api, err_api = _listar_zonas(token)
             if err_api:
@@ -345,40 +401,22 @@ def pagina_zonas_kml():
                     default=opciones,
                     key="kml_zonas_sel",
                 )
-                ids_a_eliminar = [zonas_lista[i]["id"] for i, opt in enumerate(opciones) if opt in seleccion]
+                zonas_a_eliminar = [zonas_lista[i] for i, opt in enumerate(opciones) if opt in seleccion]
 
-                if ids_a_eliminar:
+                if zonas_a_eliminar:
                     confirmar_del = st.checkbox(
-                        f"Confirmo que quiero eliminar {len(ids_a_eliminar)} zona(s)",
+                        f"Confirmo que quiero eliminar {len(zonas_a_eliminar)} zona(s)",
                         key="kml_confirmar_del",
                     )
                     if confirmar_del and st.button(
                         "Eliminar zonas seleccionadas", type="primary", key="btn_eliminar_zonas"
                     ):
-                        total_del = len(ids_a_eliminar)
-                        exitosos_del = 0
-                        barra_del, cnt_del, cont_err_del = create_progress_tracker(total_del, "Eliminando zonas...")
-
-                        for i, zid in enumerate(ids_a_eliminar):
-                            ok_d, det_d = _eliminar_zona_api(token, zid)
-                            if ok_d:
-                                exitosos_del += 1
-                            else:
-                                with cont_err_del:
-                                    render_error_item(f"Zona #{zid} — {det_d}")
-                            update_progress(barra_del, cnt_del, i + 1, total_del, "Eliminando zonas...")
-                            if i + 1 < total_del:
-                                time.sleep(ZONA_DELAY)
-
-                        finish_progress(barra_del)
-                        st.session_state.pop("_kml_zonas_lista", None)
-
-                        if exitosos_del == total_del:
-                            st.success(f"Todas las zonas eliminadas ({exitosos_del}/{total_del})")
-                        elif exitosos_del > 0:
-                            st.warning(f"{exitosos_del} de {total_del} zonas eliminadas. Revisa los errores.")
-                        else:
-                            st.error("No se pudo eliminar ninguna zona.")
+                        st.session_state["_kml_del_active"] = True
+                        st.session_state["_kml_del_queue"] = zonas_a_eliminar
+                        st.session_state["_kml_del_total"] = len(zonas_a_eliminar)
+                        st.session_state["_kml_del_done"] = 0
+                        st.session_state["_kml_del_errors"] = []
+                        st.rerun()
 
         st.stop()
 
