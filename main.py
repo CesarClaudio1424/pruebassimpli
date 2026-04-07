@@ -9,6 +9,7 @@ from eliminacion_items import pagina_eliminacion_items
 from unilever import pagina_unilever
 from zonas_kml import pagina_zonas_kml
 from recuperar_lvp import pagina_recuperar_lvp
+from eliminar_bat import pagina_eliminar_bat
 
 st.set_page_config(
     page_title="SimpliRoute Tools",
@@ -43,7 +44,7 @@ with st.sidebar:
 
     pagina = st.radio(
         "Herramienta",
-        ["Edicion Masiva de Visitas", "Webhooks Likewise", "Bloqueo LVP", "Reporte Visitas/Rutas", "Checkout General", "Eliminacion de Items", "Unilever", "Zonas KML", "Recuperar Visitas LVP"],
+        ["Edicion Masiva de Visitas", "Webhooks Likewise", "Bloqueo LVP", "Reporte Visitas/Rutas", "Checkout General", "Eliminacion de Items", "Unilever", "Zonas KML", "Recuperar Visitas LVP", "Eliminar Visitas BAT"],
         label_visibility="collapsed",
     )
 
@@ -72,5 +73,7 @@ elif pagina == "Unilever":
     pagina_unilever()
 elif pagina == "Zonas KML":
     pagina_zonas_kml()
-else:
+elif pagina == "Recuperar Visitas LVP":
     pagina_recuperar_lvp()
+else:
+    pagina_eliminar_bat()
