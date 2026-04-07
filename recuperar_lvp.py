@@ -17,10 +17,9 @@ FALLBACK_DAYS = 30
 def cargar_cuentas():
     try:
         df = pd.read_csv("cuentas.csv")
-        df.columns = [c.strip().lower() for c in df.columns]
         return {
-            str(row["nombre"]).strip(): {"id": str(row["id"]).strip(), "token": str(row["token"]).strip()}
-            for _, row in df.iterrows()
+            nombre: {"id": str(id_), "token": str(token)}
+            for nombre, id_, token in zip(df.nombre, df.id, df.token)
         }
     except FileNotFoundError:
         return None
