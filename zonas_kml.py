@@ -5,7 +5,6 @@ import streamlit as st
 from config import REQUEST_TIMEOUT
 from utils import (
     render_header, render_guide, render_label, render_tip,
-    render_error_item, create_progress_tracker, update_progress, finish_progress,
     render_stat,
 )
 
@@ -420,6 +419,55 @@ def pagina_zonas_kml():
 
         st.stop()
 
+    # --- Sesion de creacion activa ---
+    if st.session_state.get("_kml_crear_active"):
+        queue_cr = st.session_state.get("_kml_crear_queue", [])
+        total_cr = st.session_state["_kml_crear_total"]
+        procesados_cr = total_cr - len(queue_cr)
+        errores_cr: list[dict] = st.session_state["_kml_crear_errors"]
+
+        st.markdown("---")
+        st.progress(min(procesados_cr / total_cr, 1.0), text="Creando zonas...")
+        col_stat_cr, col_cancel_cr = st.columns([4, 1])
+        with col_stat_cr:
+            st.markdown(render_stat(f"{procesados_cr}/{total_cr}", "creadas"), unsafe_allow_html=True)
+        with col_cancel_cr:
+            st.markdown('<div style="padding-top:1.4rem;"></div>', unsafe_allow_html=True)
+            if queue_cr and st.button("Cancelar", key="kml_btn_cancelar_crear", use_container_width=True):
+                st.session_state["_kml_crear_active"] = False
+                st.session_state.pop("_kml_crear_queue", None)
+                done_cr = st.session_state.get("_kml_crear_done", 0)
+                st.warning(f"Proceso cancelado. {done_cr} zona(s) creadas antes de cancelar.")
+                st.stop()
+
+        for err_item in errores_cr:
+            with st.expander(f"✗ {err_item['label']}", expanded=True):
+                st.code(err_item["detail"], language=None)
+
+        if queue_cr:
+            next_cr = queue_cr[0]
+            ok_c, det_c = _crear_zona(token, next_cr["nombre"], next_cr["coords"], next_cr["schedules"])
+            if ok_c:
+                st.session_state["_kml_crear_done"] += 1
+            else:
+                st.session_state["_kml_crear_errors"].append({
+                    "label": f"Zona \u00ab{next_cr['nombre']}\u00bb",
+                    "detail": det_c,
+                })
+            st.session_state["_kml_crear_queue"] = queue_cr[1:]
+            time.sleep(ZONA_DELAY)
+            st.rerun()
+        else:
+            st.session_state["_kml_crear_active"] = False
+            exitosos_cr = st.session_state["_kml_crear_done"]
+            if exitosos_cr == total_cr:
+                st.success(f"Todas las zonas creadas correctamente ({exitosos_cr}/{total_cr})")
+            elif exitosos_cr > 0:
+                st.warning(f"{exitosos_cr} de {total_cr} zonas creadas.")
+            else:
+                st.error("No se pudo crear ninguna zona. Revisa el token y los errores.")
+        st.stop()
+
     # --- Upload KML ---
     render_label("Archivo KML")
     kml_file = st.file_uploader("Subir KML", type=["kml"], label_visibility="collapsed", key="kml_file")
@@ -627,35 +675,18 @@ def pagina_zonas_kml():
 
     # --- Crear zonas ---
     st.markdown("---")
-    if not st.button("Crear zonas en SimpliRoute", type="primary", key="btn_crear_zonas"):
-        st.stop()
-
-    total = len(zones)
-    exitosos = 0
-    barra, contador, contenedor_errores = create_progress_tracker(total, "Creando zonas...")
-
-    for i, (z, nombre) in enumerate(zip(zones, nombres_finales)):
-        coords_str = _format_coordinates(z["coords"])
-        schedules = schedules_por_zona[i] if schedules_por_zona[i] else None
-        ok, detalle = _crear_zona(token, nombre, coords_str, schedules)
-        procesados = i + 1
-
-        if ok:
-            exitosos += 1
-        else:
-            with contenedor_errores:
-                render_error_item(f"Zona {procesados} «{nombre}» — {detalle}")
-
-        update_progress(barra, contador, procesados, total, "Creando zonas...")
-
-        if procesados < total:
-            time.sleep(ZONA_DELAY)
-
-    finish_progress(barra)
-
-    if exitosos == total:
-        st.success(f"Todas las zonas creadas correctamente ({exitosos}/{total})")
-    elif exitosos > 0:
-        st.warning(f"{exitosos} de {total} zonas creadas. Revisa los errores arriba.")
-    else:
-        st.error("No se pudo crear ninguna zona. Revisa el token y los errores.")
+    if st.button("Crear zonas en SimpliRoute", type="primary", key="btn_crear_zonas"):
+        queue_items = [
+            {
+                "nombre": nombre,
+                "coords": _format_coordinates(z["coords"]),
+                "schedules": schedules_por_zona[i] if schedules_por_zona[i] else None,
+            }
+            for i, (z, nombre) in enumerate(zip(zones, nombres_finales))
+        ]
+        st.session_state["_kml_crear_active"] = True
+        st.session_state["_kml_crear_queue"] = queue_items
+        st.session_state["_kml_crear_total"] = len(queue_items)
+        st.session_state["_kml_crear_done"] = 0
+        st.session_state["_kml_crear_errors"] = []
+        st.rerun()
