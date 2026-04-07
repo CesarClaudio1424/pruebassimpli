@@ -109,11 +109,11 @@ def limpiar_visita(visita):
     visit_id = visita["id"]
     url = f"{API_BASE}/routes/visits/{visit_id}"
     payload = {
-        "reference": "",
-        "planned_date": "",
-        "route": "",
-        "title": visita.get("title", ""),
-        "address": visita.get("address", ""),
+        "reference": None,
+        "planned_date": None,
+        "route": None,
+        "title": visita.get("title") or "Unnamed",
+        "address": visita.get("address") or "Unknown",
     }
     try:
         r = requests.put(
