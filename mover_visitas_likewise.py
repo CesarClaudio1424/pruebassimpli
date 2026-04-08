@@ -113,6 +113,14 @@ def pagina_mover_visitas_likewise():
         tip="Puedes buscar multiples visitas a la vez ingresando varias referencias o IDs separadas por saltos de linea.",
     )
 
+    # Inicializar session_state
+    if "mvl_visitas_encontradas" not in st.session_state:
+        st.session_state.mvl_visitas_encontradas = None
+    if "mvl_fecha_destino_str" not in st.session_state:
+        st.session_state.mvl_fecha_destino_str = None
+    if "mvl_token" not in st.session_state:
+        st.session_state.mvl_token = None
+
     # --- Paso 1: Tipo de busqueda ---
     render_label("Paso 1 · Tipo de busqueda")
     tipo_busqueda = st.radio(
@@ -169,7 +177,6 @@ def pagina_mover_visitas_likewise():
         # Buscar todas las visitas
         visitas_encontradas = []
         no_encontradas = []
-        errores = []
 
         barra, contador, contenedor_errores = create_progress_tracker(len(valores), f"Buscando visita(s)...")
 
@@ -197,92 +204,104 @@ def pagina_mover_visitas_likewise():
                                 st.json(req_info["response"])
 
             except Exception as e:
-                errores.append((valor, str(e)))
                 no_encontradas.append(valor)
 
             update_progress(barra, contador, idx + 1, len(valores))
 
         finish_progress(barra)
 
+        # Guardar en session_state
+        st.session_state.mvl_visitas_encontradas = visitas_encontradas
+        st.session_state.mvl_fecha_destino_str = fecha_destino_str
+        st.session_state.mvl_token = token
+
         # --- Estadisticas ---
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             render_stat(len(visitas_encontradas), "Visitas encontradas")
         with col2:
             render_stat(len(no_encontradas), "No encontradas")
-        with col3:
-            render_stat(len(errores), "Errores")
 
         if visitas_encontradas:
             st.success(f"✅ {len(visitas_encontradas)} visita(s) lista(s) para mover")
 
-            # Mostrar preview
-            with st.expander("📋 Preview de visitas a mover", expanded=False):
-                df_preview = pd.DataFrame([
-                    {
-                        "ID": v.get("id"),
-                        "Reference": v.get("reference"),
-                        "Title": v.get("title", ""),
-                        "Fecha actual": v.get("planned_date", ""),
-                        "Nueva fecha": fecha_destino_str,
-                    }
-                    for v in visitas_encontradas
-                ])
-                st.dataframe(df_preview, use_container_width=True, hide_index=True)
+    # --- Mostrar preview si hay visitas ---
+    if st.session_state.mvl_visitas_encontradas:
+        visitas_encontradas = st.session_state.mvl_visitas_encontradas
+        fecha_destino_str = st.session_state.mvl_fecha_destino_str
+        token = st.session_state.mvl_token
 
-            # Boton para procesar
-            if st.button("Mover Visitas (actualizar en SimpliRoute)", use_container_width=True, type="primary"):
-                try:
-                    st.markdown("---")
-                    st.markdown("### 📤 Procesando...")
+        with st.expander("📋 Preview de visitas a mover", expanded=False):
+            df_preview = pd.DataFrame([
+                {
+                    "ID": v.get("id"),
+                    "Reference": v.get("reference"),
+                    "Title": v.get("title", ""),
+                    "Fecha actual": v.get("planned_date", ""),
+                    "Nueva fecha": fecha_destino_str,
+                }
+                for v in visitas_encontradas
+            ])
+            st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
-                    # Dividir en bloques
-                    bloques = [
-                        visitas_encontradas[i : i + MAX_BLOCK_SIZE]
-                        for i in range(0, len(visitas_encontradas), MAX_BLOCK_SIZE)
-                    ]
+        # Boton para procesar
+        if st.button("Mover Visitas (actualizar en SimpliRoute)", use_container_width=True, type="primary"):
+            try:
+                st.markdown("---")
+                st.markdown("### 📤 Procesando...")
 
-                    barra, contador, contenedor_bloques = create_progress_tracker(len(bloques), f"Moviendo visita(s)...")
-                    procesadas = 0
-                    errores_edicion = []
+                # Dividir en bloques
+                bloques = [
+                    visitas_encontradas[i : i + MAX_BLOCK_SIZE]
+                    for i in range(0, len(visitas_encontradas), MAX_BLOCK_SIZE)
+                ]
 
-                    for bloque_idx, bloque in enumerate(bloques):
-                        success, status, response = editar_visitas_bloque(bloque, fecha_destino_str, token)
+                barra, contador, contenedor_bloques = create_progress_tracker(len(bloques), f"Moviendo visita(s)...")
+                procesadas = 0
+                errores_edicion = []
 
-                        if success:
-                            procesadas += len(bloque)
-                            with st.expander(f"✅ Bloque {bloque_idx + 1}/{len(bloques)} — {len(bloque)} visita(s)", expanded=False):
-                                st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
-                                st.markdown(f"Status: `{status}`")
-                        else:
-                            errores_edicion.append((bloque_idx + 1, status, response))
-                            with st.expander(f"❌ Bloque {bloque_idx + 1}/{len(bloques)} — ERROR", expanded=True):
-                                st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
-                                st.markdown(f"Status: `{status}`")
-                                st.write(response)
+                for bloque_idx, bloque in enumerate(bloques):
+                    success, status, response = editar_visitas_bloque(bloque, fecha_destino_str, token)
 
-                        update_progress(barra, contador, bloque_idx + 1, len(bloques))
-                        time.sleep(EDIT_DELAY)
-
-                    finish_progress(barra)
-
-                    # Resultado final
-                    st.markdown("---")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        render_stat(procesadas, "Visitas movidas")
-                    with col2:
-                        render_stat(len(errores_edicion), "Bloques con error")
-
-                    if procesadas == len(visitas_encontradas):
-                        st.success(f"✅ ¡Completado! Se movieron {procesadas} visita(s) a {fecha_destino_str}")
+                    if success:
+                        procesadas += len(bloque)
+                        with st.expander(f"✅ Bloque {bloque_idx + 1}/{len(bloques)} — {len(bloque)} visita(s)", expanded=False):
+                            st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
+                            st.markdown(f"Status: `{status}`")
                     else:
-                        st.warning(f"⚠️ Se movieron {procesadas}/{len(visitas_encontradas)} visitas")
+                        errores_edicion.append((bloque_idx + 1, status, response))
+                        with st.expander(f"❌ Bloque {bloque_idx + 1}/{len(bloques)} — ERROR", expanded=True):
+                            st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
+                            st.markdown(f"Status: `{status}`")
+                            st.write(response)
 
-                except Exception as e:
-                    st.error(f"❌ Error al procesar: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
+                    update_progress(barra, contador, bloque_idx + 1, len(bloques))
+                    time.sleep(EDIT_DELAY)
+
+                finish_progress(barra)
+
+                # Resultado final
+                st.markdown("---")
+                col1, col2 = st.columns(2)
+                with col1:
+                    render_stat(procesadas, "Visitas movidas")
+                with col2:
+                    render_stat(len(errores_edicion), "Bloques con error")
+
+                if procesadas == len(visitas_encontradas):
+                    st.success(f"✅ ¡Completado! Se movieron {procesadas} visita(s) a {fecha_destino_str}")
+                else:
+                    st.warning(f"⚠️ Se movieron {procesadas}/{len(visitas_encontradas)} visitas")
+
+                # Limpiar session_state
+                st.session_state.mvl_visitas_encontradas = None
+                st.session_state.mvl_fecha_destino_str = None
+                st.session_state.mvl_token = None
+
+            except Exception as e:
+                st.error(f"❌ Error al procesar: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":
