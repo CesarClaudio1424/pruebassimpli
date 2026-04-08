@@ -27,31 +27,31 @@ def _headers(token):
 def buscar_visitas_por_fecha(planned_date, token):
     """Obtiene todas las visitas de una fecha. Returns (lista de visitas, req_info dict)."""
     url = f"{API_BASE}/routes/visits/?planned_date={planned_date}"
-    info = {"url": url, "status": None, "response": None}
+    info = {"url": url, "status": None, "response": None, "error": None}
     try:
-        r = requests.get(url, headers=_headers(token), timeout=30)
+        r = requests.get(
+            url,
+            headers={"Authorization": f"Token {token.strip()}", "Content-Type": "application/json"},
+            timeout=60,
+        )
         info["status"] = r.status_code
 
         # Intentar parsear como JSON
         try:
-            info["response"] = r.json()
-        except Exception as json_err:
-            # Si no es JSON, guardar el texto
-            info["response"] = f"HTTP {r.status_code}: {r.text[:500]}"
+            data = r.json()
+            info["response"] = data
+        except Exception:
+            info["response"] = r.text[:1000]
 
-        # Solo retornar si fue exitoso (200)
         if r.status_code == 200:
-            try:
-                return r.json() or [], info
-            except:
-                return [], info
+            return data if isinstance(data, list) else [], info
         else:
-            # Si no es 200, mostrar el error
             return [], info
 
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
+        import traceback
         info["status"] = 0
-        info["response"] = f"Error de conexion: {str(e)}"
+        info["error"] = traceback.format_exc()
 
     return [], info
 
@@ -208,9 +208,16 @@ def pagina_mover_visitas_likewise():
                     st.code(f"GET {req_info['url']}", language="bash")
                     st.markdown(f"**Status:** `{req_info['status']}`")
                     st.markdown(f"**Total de visitas en {fecha_origen_str}:** `{len(todas_visitas)}`")
-                    if req_info.get('response'):
+                    if req_info.get('error'):
+                        st.markdown("**Error completo:**")
+                        st.code(req_info['error'])
+                    elif req_info.get('response'):
                         st.markdown("**Response preview:**")
-                        st.json(req_info['response'][:3] if isinstance(req_info['response'], list) else req_info['response'])
+                        if isinstance(req_info['response'], (list, dict)):
+                            preview = req_info['response'][:3] if isinstance(req_info['response'], list) else req_info['response']
+                            st.json(preview)
+                        else:
+                            st.code(str(req_info['response']))
 
             # Filtrar por reference o ID
             visitas_encontradas = filtrar_visitas(todas_visitas, valores, tipo_busqueda)
