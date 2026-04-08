@@ -31,14 +31,28 @@ def buscar_visitas_por_fecha(planned_date, token):
     try:
         r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
         info["status"] = r.status_code
+
+        # Intentar parsear como JSON
         try:
             info["response"] = r.json()
-        except Exception:
-            info["response"] = r.text
+        except Exception as json_err:
+            # Si no es JSON, guardar el texto
+            info["response"] = f"HTTP {r.status_code}: {r.text[:500]}"
+
+        # Solo retornar si fue exitoso (200)
         if r.status_code == 200:
-            return r.json() or [], info
+            try:
+                return r.json() or [], info
+            except:
+                return [], info
+        else:
+            # Si no es 200, mostrar el error
+            return [], info
+
     except requests.exceptions.RequestException as e:
-        info["response"] = str(e)
+        info["status"] = 0
+        info["response"] = f"Error de conexion: {str(e)}"
+
     return [], info
 
 
