@@ -110,6 +110,7 @@ def pagina_mover_visitas_likewise():
             "<strong>Elige fecha destino</strong> — La fecha a la que se moveran las visitas.",
             "<strong>Busca y procesa</strong> — Se mostraran los resultados y se actualizaran en bloques de 500.",
         ],
+        tip="Puedes buscar multiples visitas a la vez ingresando varias referencias o IDs separadas por saltos de linea.",
     )
 
     # --- Paso 1: Tipo de busqueda ---
