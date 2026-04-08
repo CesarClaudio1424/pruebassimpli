@@ -18,6 +18,8 @@ st.set_page_config(
     layout="centered",
 )
 
+# Force reload
+
 # --- Tema ---
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
