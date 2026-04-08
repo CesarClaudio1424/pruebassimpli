@@ -134,9 +134,8 @@ def pagina_mover_visitas_likewise():
 
     # Cargar token desde secrets
     token_key = CUENTAS_LIKEWISE[cuenta]
-    token = load_secret(f"api_config.{token_key}")
+    token = load_secret(token_key, f"Token de {cuenta} no encontrado en secrets. Configura `[api_config]` con `{token_key}`.")
     if not token:
-        render_tip(f"⚠️ Token no configurado para {cuenta}", warning=True)
         st.stop()
 
     # --- Paso 3: Ingreso de valores ---
