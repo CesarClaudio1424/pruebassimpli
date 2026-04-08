@@ -45,14 +45,16 @@ def buscar_visitas_por_fecha(planned_date, token):
 def filtrar_visitas(visitas, valores, tipo_busqueda):
     """Filtra visitas por reference o ID. Returns lista de visitas encontradas."""
     encontradas = []
-    valores_set = set(str(v).lower() for v in valores)
+    valores_set = set(str(v).strip().lower() for v in valores)
 
     for v in visitas:
         if tipo_busqueda == "Reference":
-            if str(v.get("reference", "")).lower() in valores_set:
+            ref = str(v.get("reference", "")).strip().lower()
+            if ref in valores_set:
                 encontradas.append(v)
         else:  # ID
-            if str(v.get("id", "")).lower() in valores_set:
+            vid = str(v.get("id", "")).strip().lower()
+            if vid in valores_set:
                 encontradas.append(v)
 
     return encontradas
@@ -186,11 +188,12 @@ def pagina_mover_visitas_likewise():
                 with st.expander("📋 Request de busqueda", expanded=False):
                     st.code(f"GET {req_info['url']}", language="bash")
                     st.markdown(f"Status: `{req_info['status']}`")
+                    st.write(f"**Total de visitas en {fecha_origen_str}:** {len(todas_visitas)}")
 
             # Filtrar por reference o ID
             visitas_encontradas = filtrar_visitas(todas_visitas, valores, tipo_busqueda)
             no_encontradas = [v for v in valores if v not in [
-                str(vis.get("reference" if tipo_busqueda == "Reference" else "id", ""))
+                str(vis.get("reference" if tipo_busqueda == "Reference" else "id", "")).strip()
                 for vis in visitas_encontradas
             ]]
 
