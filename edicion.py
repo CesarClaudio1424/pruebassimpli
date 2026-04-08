@@ -5,7 +5,7 @@ import io
 import time
 from datetime import datetime
 import pandas as pd
-from config import API_BASE, REQUEST_TIMEOUT, EDIT_DELAY, MAX_BLOCK_SIZE
+from config import API_BASE, EDIT_TIMEOUT, EDIT_DELAY, MAX_BLOCK_SIZE
 from utils import render_header, render_guide, render_stat, render_label, render_tip
 
 PLANTILLA_CAMPOS = [
@@ -45,7 +45,7 @@ def generar_csv_plantilla():
 def validar_cuenta(token):
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
     try:
-        response = requests.get(f"{API_BASE}/accounts/me/", headers=headers, timeout=REQUEST_TIMEOUT)
+        response = requests.get(f"{API_BASE}/accounts/me/", headers=headers, timeout=EDIT_TIMEOUT)
         if response.status_code == 200:
             nombre = response.json().get("account", {}).get("name", "Sin nombre")
             return True, nombre
@@ -57,7 +57,7 @@ def validar_cuenta(token):
 def enviar_visitas(bloque, token):
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
     try:
-        response = requests.put(f"{API_BASE}/routes/visits/", headers=headers, json=bloque, timeout=REQUEST_TIMEOUT)
+        response = requests.put(f"{API_BASE}/routes/visits/", headers=headers, json=bloque, timeout=EDIT_TIMEOUT)
         time.sleep(EDIT_DELAY)
         return response.status_code, response.text
     except requests.exceptions.RequestException as e:
