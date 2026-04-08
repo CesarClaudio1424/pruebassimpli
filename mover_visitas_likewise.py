@@ -181,6 +181,9 @@ def pagina_mover_visitas_likewise():
                     visita, req_info = buscar_por_id(valor, token)
 
                 if visita:
+                    # Mantener el valor original ingresado como reference si no viene en la respuesta
+                    if "reference" not in visita or not visita.get("reference"):
+                        visita["reference"] = valor
                     visitas_encontradas.append(visita)
                 else:
                     no_encontradas.append(valor)
