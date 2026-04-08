@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import date
+from datetime import date, timedelta
 from config import API_BASE, REQUEST_TIMEOUT, MAX_BLOCK_SIZE, EDIT_DELAY
 from utils import (
     render_header, render_guide, render_label, render_stat,
@@ -155,14 +155,22 @@ def pagina_mover_visitas_likewise():
     if not token:
         st.stop()
 
-    # --- Paso 3: Fecha de origen ---
-    render_label("Paso 3 · Fecha de origen")
-    fecha_origen = st.date_input(
-        "Fecha donde están las visitas",
-        value=date.today(),
-        label_visibility="collapsed",
-    )
-    fecha_origen_str = fecha_origen.strftime("%Y-%m-%d")
+    # --- Paso 3: Rango de fechas de origen ---
+    render_label("Paso 3 · Rango de fechas de origen")
+    col_desde, col_hasta = st.columns(2)
+    with col_desde:
+        fecha_desde = st.date_input("Desde", value=date.today(), label_visibility="collapsed")
+    with col_hasta:
+        fecha_hasta = st.date_input("Hasta", value=date.today(), label_visibility="collapsed")
+
+    # Validar rango maximo de 7 dias
+    dias_rango = (fecha_hasta - fecha_desde).days
+    if dias_rango < 0:
+        render_tip("⚠️ La fecha 'Hasta' debe ser igual o posterior a 'Desde'.", warning=True)
+        st.stop()
+    if dias_rango > 7:
+        render_tip("⚠️ El rango maximo es de 7 dias.", warning=True)
+        st.stop()
 
     # --- Paso 4: Ingreso de valores ---
     render_label(f"Paso 4 · Ingresa {tipo_busqueda}s")
@@ -192,17 +200,25 @@ def pagina_mover_visitas_likewise():
     # --- Boton de busqueda ---
     st.markdown("---")
     if st.button("Buscar Visitas", use_container_width=True, type="primary"):
-        barra, contador, contenedor_errores = create_progress_tracker(1, f"Buscando visita(s) en {fecha_origen_str}...")
+        # Generar lista de fechas del rango
+        fechas = [(fecha_desde + timedelta(days=d)).strftime("%Y-%m-%d") for d in range(dias_rango + 1)]
+
+        barra, contador, contenedor_errores = create_progress_tracker(len(fechas), f"Buscando visita(s)...")
 
         try:
-            # Obtener todas las visitas de la fecha de origen
-            todas_visitas, req_info = buscar_visitas_por_fecha(fecha_origen_str, token)
+            todas_visitas = []
 
-            if req_info.get('error'):
-                with contenedor_errores:
-                    with st.expander("❌ Error en la busqueda", expanded=True):
-                        st.code(f"GET {req_info['url']}", language="bash")
-                        st.code(req_info['error'])
+            for idx, fecha_str in enumerate(fechas):
+                visitas_dia, req_info = buscar_visitas_por_fecha(fecha_str, token)
+                todas_visitas.extend(visitas_dia)
+
+                if req_info.get('error'):
+                    with contenedor_errores:
+                        with st.expander(f"❌ Error en {fecha_str}", expanded=True):
+                            st.code(f"GET {req_info['url']}", language="bash")
+                            st.code(req_info['error'])
+
+                update_progress(barra, contador, idx + 1, len(fechas))
 
             # Filtrar por reference o ID
             visitas_encontradas = filtrar_visitas(todas_visitas, valores, tipo_busqueda)
@@ -210,8 +226,6 @@ def pagina_mover_visitas_likewise():
                 str(vis.get("reference" if tipo_busqueda == "Reference" else "id", "")).strip()
                 for vis in visitas_encontradas
             ]]
-
-            update_progress(barra, contador, 1, 1)
 
         except Exception as e:
             with contenedor_errores:
@@ -223,7 +237,6 @@ def pagina_mover_visitas_likewise():
 
         # Guardar en session_state
         st.session_state.mvl_visitas_encontradas = visitas_encontradas
-        st.session_state.mvl_fecha_origen_str = fecha_origen_str
         st.session_state.mvl_fecha_destino_str = fecha_destino_str
         st.session_state.mvl_token = token
 
