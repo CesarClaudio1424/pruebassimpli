@@ -232,58 +232,57 @@ def pagina_mover_visitas_likewise():
 
             # Boton para procesar
             if st.button("Mover Visitas (actualizar en SimpliRoute)", use_container_width=True, type="primary"):
-                st.markdown("---")
-                st.markdown("### 📤 Procesando...")
+                try:
+                    st.markdown("---")
+                    st.markdown("### 📤 Procesando...")
 
-                # Dividir en bloques
-                bloques = [
-                    visitas_encontradas[i : i + MAX_BLOCK_SIZE]
-                    for i in range(0, len(visitas_encontradas), MAX_BLOCK_SIZE)
-                ]
+                    # Dividir en bloques
+                    bloques = [
+                        visitas_encontradas[i : i + MAX_BLOCK_SIZE]
+                        for i in range(0, len(visitas_encontradas), MAX_BLOCK_SIZE)
+                    ]
 
-                barra, contador, contenedor_bloques = create_progress_tracker(len(bloques), f"Moviendo visita(s)...")
-                procesadas = 0
-                errores_edicion = []
+                    barra, contador, contenedor_bloques = create_progress_tracker(len(bloques), f"Moviendo visita(s)...")
+                    procesadas = 0
+                    errores_edicion = []
 
-                for bloque_idx, bloque in enumerate(bloques):
-                    try:
+                    for bloque_idx, bloque in enumerate(bloques):
                         success, status, response = editar_visitas_bloque(bloque, fecha_destino_str, token)
 
                         if success:
                             procesadas += len(bloque)
-                            with contenedor_bloques:
-                                with st.expander(f"✅ Bloque {bloque_idx + 1}/{len(bloques)} — {len(bloque)} visita(s)", expanded=False):
-                                    st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
-                                    st.markdown(f"Status: `{status}`")
-                                    st.json({"updated": len(bloque)})
+                            with st.expander(f"✅ Bloque {bloque_idx + 1}/{len(bloques)} — {len(bloque)} visita(s)", expanded=False):
+                                st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
+                                st.markdown(f"Status: `{status}`")
                         else:
                             errores_edicion.append((bloque_idx + 1, status, response))
-                            with contenedor_bloques:
-                                with st.expander(f"❌ Bloque {bloque_idx + 1}/{len(bloques)} — ERROR", expanded=True):
-                                    st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
-                                    st.markdown(f"Status: `{status}`")
-                                    st.json({"error": response})
-                    except Exception as e:
-                        with contenedor_bloques:
-                            st.error(f"❌ Error en bloque {bloque_idx + 1}: {str(e)}")
+                            with st.expander(f"❌ Bloque {bloque_idx + 1}/{len(bloques)} — ERROR", expanded=True):
+                                st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
+                                st.markdown(f"Status: `{status}`")
+                                st.write(response)
 
-                    update_progress(barra, contador, bloque_idx + 1, len(bloques))
-                    time.sleep(EDIT_DELAY)
+                        update_progress(barra, contador, bloque_idx + 1, len(bloques))
+                        time.sleep(EDIT_DELAY)
 
-                finish_progress(barra)
+                    finish_progress(barra)
 
-                # Resultado final
-                st.markdown("---")
-                col1, col2 = st.columns(2)
-                with col1:
-                    render_stat(procesadas, "Visitas movidas")
-                with col2:
-                    render_stat(len(errores_edicion), "Bloques con error")
+                    # Resultado final
+                    st.markdown("---")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        render_stat(procesadas, "Visitas movidas")
+                    with col2:
+                        render_stat(len(errores_edicion), "Bloques con error")
 
-                if procesadas == len(visitas_encontradas):
-                    st.success(f"✅ ¡Completado! Se movieron {procesadas} visita(s) a {fecha_destino_str}")
-                else:
-                    st.warning(f"⚠️ Se movieron {procesadas}/{len(visitas_encontradas)} visitas")
+                    if procesadas == len(visitas_encontradas):
+                        st.success(f"✅ ¡Completado! Se movieron {procesadas} visita(s) a {fecha_destino_str}")
+                    else:
+                        st.warning(f"⚠️ Se movieron {procesadas}/{len(visitas_encontradas)} visitas")
+
+                except Exception as e:
+                    st.error(f"❌ Error al procesar: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":
