@@ -29,7 +29,7 @@ def buscar_visitas_por_fecha(planned_date, token):
     url = f"{API_BASE}/routes/visits/?planned_date={planned_date}"
     info = {"url": url, "status": None, "response": None}
     try:
-        r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
+        r = requests.get(url, headers=_headers(token), timeout=30)
         info["status"] = r.status_code
 
         # Intentar parsear como JSON
