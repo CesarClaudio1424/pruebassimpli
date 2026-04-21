@@ -91,7 +91,10 @@ def limpiar_visitas_bloque(visitas, token):
 
 
 def _reset_estado():
-    for k in ["ev_visitas", "ev_a_borrar", "ev_grupos", "ev_fecha", "ev_token", "ev_cuenta"]:
+    for k in [
+        "ev_visitas", "ev_a_borrar", "ev_grupos",
+        "ev_fecha", "ev_token", "ev_cuenta", "ev_modo",
+    ]:
         if k in st.session_state:
             del st.session_state[k]
 
@@ -106,12 +109,12 @@ def pagina_eliminar_visitas():
         steps=[
             "<strong>Ingresa el token</strong> — Token de API de la cuenta donde estan las visitas.",
             "<strong>Confirma la cuenta</strong> — Se validara y se mostrara el nombre.",
-            "<strong>Selecciona la opcion</strong> — Por ahora disponible: Eliminar duplicados.",
+            "<strong>Selecciona la opcion</strong> — <em>Eliminar duplicados</em> (solo los repetidos) o <em>Eliminacion total</em> (todas las visitas del dia).",
             "<strong>Elige la fecha</strong> — Fecha de las visitas a revisar.",
-            "<strong>Buscar y revisar</strong> — Se listaran los duplicados detectados.",
+            "<strong>Buscar y revisar</strong> — Se listaran las visitas afectadas.",
             "<strong>Confirmar eliminacion</strong> — Se limpiara <code>planned_date</code> a 2020-01-01 y se quitara la ruta en bloques.",
         ],
-        tip="Para duplicados: se conserva la visita con el ID mas bajo (la primera creada) y se eliminan las demas.",
+        tip="Duplicados: se conserva la visita con el ID mas bajo (la primera creada). Eliminacion total: se borran TODAS las visitas de la fecha.",
     )
 
     # --- Paso 1: Token ---
@@ -140,17 +143,24 @@ def pagina_eliminar_visitas():
     render_label("Paso 2 · Opcion")
     opcion = st.radio(
         "Opcion",
-        ["Eliminar duplicados"],
+        ["Eliminar duplicados", "Eliminacion total"],
         horizontal=True,
         label_visibility="collapsed",
     )
 
+    # Reset si cambia la opcion
+    if st.session_state.get("ev_opcion") != opcion:
+        _reset_estado()
+        st.session_state.ev_opcion = opcion
+
     if opcion == "Eliminar duplicados":
         _flujo_duplicados(token, cuenta)
+    else:
+        _flujo_total(token, cuenta)
 
 
-def _flujo_duplicados(token, cuenta):
-    # --- Paso 3: Fecha ---
+def _paso_fecha_y_busqueda(token, cuenta, label_boton, spinner_fn):
+    """Paso 3 (fecha) + boton de busqueda. spinner_fn(visitas) -> None guarda en session_state."""
     render_label("Paso 3 · Fecha de las visitas")
     fecha = st.date_input(
         "Fecha",
@@ -160,13 +170,12 @@ def _flujo_duplicados(token, cuenta):
     )
     fecha_str = fecha.strftime("%Y-%m-%d")
 
-    # Reset si cambia token/fecha
     if st.session_state.get("ev_fecha") != fecha_str or st.session_state.get("ev_token") != token:
         if "ev_a_borrar" in st.session_state:
             _reset_estado()
 
     st.markdown("---")
-    if st.button("Buscar duplicados", use_container_width=True, type="primary"):
+    if st.button(label_boton, use_container_width=True, type="primary"):
         with st.spinner(f"Consultando visitas del {fecha_str}..."):
             visitas, status, err = buscar_visitas_por_fecha(fecha_str, token)
 
@@ -174,16 +183,23 @@ def _flujo_duplicados(token, cuenta):
             st.error(f"Error al consultar visitas (HTTP {status}): {err or 'sin detalle'}")
             st.stop()
 
-        a_borrar, grupos = detectar_duplicados(visitas)
-
+        spinner_fn(visitas)
         st.session_state.ev_visitas = visitas
-        st.session_state.ev_a_borrar = a_borrar
-        st.session_state.ev_grupos = grupos
         st.session_state.ev_fecha = fecha_str
         st.session_state.ev_token = token
         st.session_state.ev_cuenta = cuenta
 
-    if "ev_a_borrar" not in st.session_state:
+
+def _flujo_duplicados(token, cuenta):
+    def _guardar(visitas):
+        a_borrar, grupos = detectar_duplicados(visitas)
+        st.session_state.ev_a_borrar = a_borrar
+        st.session_state.ev_grupos = grupos
+        st.session_state.ev_modo = "duplicados"
+
+    _paso_fecha_y_busqueda(token, cuenta, "Buscar duplicados", _guardar)
+
+    if st.session_state.get("ev_modo") != "duplicados" or "ev_a_borrar" not in st.session_state:
         st.stop()
 
     visitas = st.session_state.ev_visitas
@@ -204,7 +220,6 @@ def _flujo_duplicados(token, cuenta):
         st.success("✅ No se detectaron duplicados en la fecha seleccionada.")
         st.stop()
 
-    # --- Preview ---
     with st.expander(f"📋 References duplicadas ({len(grupos)})", expanded=True):
         df_grupos = pd.DataFrame([
             {
@@ -218,17 +233,7 @@ def _flujo_duplicados(token, cuenta):
         st.dataframe(df_grupos, use_container_width=True, hide_index=True)
 
     with st.expander(f"📄 Detalle de visitas a eliminar ({len(a_borrar)})", expanded=False):
-        df_borrar = pd.DataFrame([
-            {
-                "ID": v.get("id"),
-                "Reference": v.get("reference"),
-                "Title": v.get("title", ""),
-                "Address": v.get("address", ""),
-                "Ruta actual": v.get("route", ""),
-            }
-            for v in a_borrar
-        ])
-        st.dataframe(df_borrar, use_container_width=True, hide_index=True)
+        st.dataframe(_df_visitas(a_borrar), use_container_width=True, hide_index=True)
 
     render_tip(
         f"Se enviara un PUT bulk a <code>/routes/visits/</code> con <code>planned_date=2020-01-01</code> "
@@ -237,8 +242,9 @@ def _flujo_duplicados(token, cuenta):
     )
 
     confirmar = st.checkbox(
-        f"Confirmo que quiero eliminar {len(a_borrar)} visita(s) duplicada(s) de la cuenta {st.session_state.ev_cuenta} en la fecha {fecha_str}",
-        key="ev_confirmar",
+        f"Confirmo que quiero eliminar {len(a_borrar)} visita(s) duplicada(s) "
+        f"de la cuenta {cuenta} en la fecha {fecha_str}",
+        key="ev_confirmar_dup",
     )
 
     if not confirmar:
@@ -247,7 +253,74 @@ def _flujo_duplicados(token, cuenta):
     if not st.button("Eliminar duplicados", use_container_width=True, type="primary"):
         st.stop()
 
-    # --- Procesamiento ---
+    _ejecutar_borrado(a_borrar, token, cuenta, fecha_str, descripcion="duplicada(s)")
+
+
+def _flujo_total(token, cuenta):
+    def _guardar(visitas):
+        st.session_state.ev_a_borrar = list(visitas)
+        st.session_state.ev_modo = "total"
+
+    _paso_fecha_y_busqueda(token, cuenta, "Buscar visitas del dia", _guardar)
+
+    if st.session_state.get("ev_modo") != "total" or "ev_a_borrar" not in st.session_state:
+        st.stop()
+
+    visitas = st.session_state.ev_visitas
+    a_borrar = st.session_state.ev_a_borrar
+    fecha_str = st.session_state.ev_fecha
+
+    # --- Stats ---
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(render_stat(len(visitas), "Visitas en la fecha"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(len(a_borrar), "Visitas a eliminar"), unsafe_allow_html=True)
+
+    if not a_borrar:
+        st.info("No hay visitas en esa fecha.")
+        st.stop()
+
+    with st.expander(f"📄 Detalle de visitas a eliminar ({len(a_borrar)})", expanded=False):
+        st.dataframe(_df_visitas(a_borrar), use_container_width=True, hide_index=True)
+
+    render_tip(
+        f"⚠️ <strong>Eliminacion total</strong>: se borraran <strong>TODAS</strong> las {len(a_borrar)} "
+        f"visita(s) de la fecha {fecha_str} (sin filtrar duplicados). "
+        f"PUT bulk a <code>/routes/visits/</code> con <code>planned_date=2020-01-01</code> y "
+        f"<code>route=\"\"</code>, en bloques de hasta {MAX_BLOCK_SIZE}.",
+        warning=True,
+    )
+
+    confirmar = st.checkbox(
+        f"Confirmo eliminar TODAS las {len(a_borrar)} visita(s) "
+        f"de la cuenta {cuenta} en la fecha {fecha_str}",
+        key="ev_confirmar_total",
+    )
+
+    if not confirmar:
+        st.stop()
+
+    if not st.button("Eliminar todas las visitas", use_container_width=True, type="primary"):
+        st.stop()
+
+    _ejecutar_borrado(a_borrar, token, cuenta, fecha_str, descripcion="visita(s)")
+
+
+def _df_visitas(visitas):
+    return pd.DataFrame([
+        {
+            "ID": v.get("id"),
+            "Reference": v.get("reference"),
+            "Title": v.get("title", ""),
+            "Address": v.get("address", ""),
+            "Ruta actual": v.get("route", ""),
+        }
+        for v in visitas
+    ])
+
+
+def _ejecutar_borrado(a_borrar, token, cuenta, fecha_str, descripcion):
     st.markdown("---")
     st.markdown("### 🗑️ Procesando...")
 
@@ -257,7 +330,7 @@ def _flujo_duplicados(token, cuenta):
     errores = []
 
     for idx, bloque in enumerate(bloques):
-        ok, status, resp = limpiar_visitas_bloque(bloque, st.session_state.ev_token)
+        ok, status, resp = limpiar_visitas_bloque(bloque, token)
 
         with cont_bloques:
             if ok:
@@ -277,21 +350,20 @@ def _flujo_duplicados(token, cuenta):
 
     finish_progress(barra)
 
-    # --- Resumen ---
     st.markdown("---")
     st.markdown("### 📊 Resumen")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
-        st.markdown(render_stat(st.session_state.ev_cuenta, "Cuenta"), unsafe_allow_html=True)
+        st.markdown(render_stat(cuenta, "Cuenta"), unsafe_allow_html=True)
     with col_b:
         st.markdown(render_stat(eliminadas, "Visitas eliminadas"), unsafe_allow_html=True)
     with col_c:
         st.markdown(render_stat(len(errores), "Bloques con error"), unsafe_allow_html=True)
 
     if eliminadas == len(a_borrar):
-        st.success(f"✅ ¡Completado! Se eliminaron {eliminadas} visita(s) duplicada(s) de la fecha {fecha_str}.")
+        st.success(f"✅ ¡Completado! Se eliminaron {eliminadas} {descripcion} de la fecha {fecha_str}.")
     else:
-        st.warning(f"⚠️ Se eliminaron {eliminadas}/{len(a_borrar)} visita(s).")
+        st.warning(f"⚠️ Se eliminaron {eliminadas}/{len(a_borrar)} {descripcion}.")
 
     _reset_estado()
 
