@@ -7,6 +7,41 @@ from utils import (
     create_progress_tracker, update_progress, finish_progress,
 )
 
+_LOADER_CSS = """
+<style>
+@keyframes sr-afu-spin { to { transform: rotate(360deg); } }
+@keyframes sr-afu-pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
+.sr-afu-loader {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 2rem 1rem; margin: 1rem 0; border-radius: 0.8rem;
+    background: linear-gradient(135deg, rgba(42,43,161,0.08) 0%, rgba(54,156,255,0.08) 100%);
+    border: 1px solid rgba(42,43,161,0.15);
+}
+.sr-afu-spinner {
+    width: 56px; height: 56px; border-radius: 50%;
+    border: 5px solid rgba(42,43,161,0.15);
+    border-top-color: #2A2BA1; border-right-color: #369CFF;
+    animation: sr-afu-spin 0.9s linear infinite;
+}
+.sr-afu-text {
+    margin-top: 1rem; color: #2A2BA1; font-weight: 700;
+    font-size: 1rem; letter-spacing: -0.01em;
+    animation: sr-afu-pulse 1.4s ease-in-out infinite;
+}
+.sr-afu-sub { margin-top: 0.25rem; color: #666; font-size: 0.8rem; }
+</style>
+"""
+
+
+def _render_loader(placeholder, mensaje, sub=""):
+    sub_html = f'<div class="sr-afu-sub">{sub}</div>' if sub else ""
+    placeholder.markdown(
+        f'{_LOADER_CSS}<div class="sr-afu-loader">'
+        f'<div class="sr-afu-spinner"></div>'
+        f'<div class="sr-afu-text">{mensaje}</div>{sub_html}</div>',
+        unsafe_allow_html=True,
+    )
+
 AGENCIAS_VALIDAS = {"tlahuac": "Tláhuac", "monterrey": "Monterrey"}
 HORA_INICIO_FIJA = "07:00"
 HORA_FINAL_FIJA = "23:00"
@@ -142,13 +177,18 @@ def _seccion_actualizar_planeacion():
         )
         return
 
+    loader = st.empty()
+    _render_loader(loader, "Leyendo archivo...", f"Procesando {archivo.name}")
     try:
         df = _leer_archivo(archivo)
     except Exception as e:
+        loader.empty()
         st.error(f"Error al leer el archivo: {e}")
         return
 
+    _render_loader(loader, "Extrayendo registros validos...", f"{len(df):,} filas detectadas")
     registros, stats = _extraer_registros(df)
+    loader.empty()
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -180,27 +220,32 @@ def _seccion_actualizar_planeacion():
         return
 
     supabase = _get_supabase_client()
+    loader = st.empty()
 
-    with st.spinner("Consultando clientes existentes..."):
-        clientes = [r["cliente"] for r in registros]
-        existentes = _contar_existentes(supabase, clientes)
+    _render_loader(loader, "Consultando clientes existentes...", f"{len(registros):,} a verificar")
+    clientes = [r["cliente"] for r in registros]
+    existentes = _contar_existentes(supabase, clientes)
 
     total = len(registros)
+    total_lotes = (total + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
     barra, contador, contenedor_errores = create_progress_tracker(total, text="Subiendo a Supabase...")
 
     procesados = 0
     errores = 0
     for i in range(0, total, UPSERT_BATCH_SIZE):
+        lote_num = i // UPSERT_BATCH_SIZE + 1
+        _render_loader(loader, f"Subiendo lote {lote_num} de {total_lotes}...", f"{len(registros[i:i+UPSERT_BATCH_SIZE])} registros en este lote")
         lote = registros[i:i + UPSERT_BATCH_SIZE]
         try:
             _upsert_lote(supabase, lote)
         except Exception as e:
             errores += len(lote)
             with contenedor_errores:
-                render_error_item(f"Lote {i // UPSERT_BATCH_SIZE + 1}: {e}")
+                render_error_item(f"Lote {lote_num}: {e}")
         procesados += len(lote)
         update_progress(barra, contador, procesados, total, text="Subiendo a Supabase...")
 
+    loader.empty()
     finish_progress(barra)
 
     exitosos = total - errores
