@@ -1,10 +1,10 @@
 # SimpliRoute Tools
 
 ## Descripcion
-App Streamlit multi-herramienta con navegacion por sidebar. Incluye once herramientas:
+App Streamlit multi-herramienta con navegacion por sidebar. Incluye doce herramientas:
 1. **Edicion Masiva de Visitas** — Sube un CSV y edita visitas en bloque via API SimpliRoute (PUT).
 2. **Webhooks Likewise** — Envia webhooks a Google Cloud Functions para procesar rutas/visitas del middleware Likewise (POST).
-3. **Mover Visitas Likewise** — Busca visitas por reference o ID y las mueve a una fecha destino en las 4 cuentas Likewise (GET + PUT).
+3. **Mover Visitas Likewise** — Busca visitas por rango de fechas, filtra por reference o ID, y las mueve a una fecha destino en las 4 cuentas Likewise (GET + PUT).
 4. **Bloqueo LVP** — Configura bloqueo de edicion y modo seguridad en cuentas Liverpool via API SimpliRoute (POST).
 5. **Reporte Visitas/Rutas** — Genera reportes por rango de fechas dividido en sub-intervalos y los envia por correo via API SimpliRoute (GET).
 6. **Checkout General** — Envia webhooks de checkout a SimpliRoute para rutas y visitas de cualquier cuenta (POST).
@@ -12,7 +12,8 @@ App Streamlit multi-herramienta con navegacion por sidebar. Incluye once herrami
 8. **Unilever** — Actualiza cargas (load_2, load_3) y ventanas horarias por agencia via API SimpliRoute (PUT).
 9. **Zonas KML** — Crea zonas en SimpliRoute desde archivos KML (poligonos exportados de Google My Maps), o elimina zonas existentes de una cuenta.
 10. **Recuperar Visitas LVP** — Busca visitas Liverpool por referencia y las asigna a la ruta/fecha correcta (GET + PUT).
-11. **Eliminar Visitas BAT** — (herramienta secundaria)
+11. **Eliminar Visitas BAT** — (herramienta secundaria, solo busqueda por API). La version completa con acceso a BD es una app Flet standalone en `C:\Proyectos\EliminarBAT\`.
+12. **Asignacion Fija Uni** — Sube un Excel de planeacion Unilever y alimenta Supabase (tabla `planeacion_nacional`) con upsert por cliente. Filtra solo agencias Tláhuac y Monterrey.
 
 ## Stack
 - **Python 3.12.3** con entorno virtual `.venv`
@@ -27,6 +28,10 @@ App Streamlit multi-herramienta con navegacion por sidebar. Incluye once herrami
 Estas apps viven en repos propios, separados de simpliroute-tools, y tienen su propio deploy en Streamlit Cloud:
 - **Eliminacion de Visitas:** CesarClaudio1424/eliminacion-visitas — app de un solo archivo (`main.py`), elimina visitas en bloque via `POST /v1/bulk/delete/visits/`. No se agrega a este repo.
 
+## Apps locales standalone
+Apps que no se despliegan en Streamlit Cloud, se distribuyen como `.exe`:
+- **Eliminar Visitas BAT (Flet):** `C:\Proyectos\EliminarBAT\` — app Flet (`main_flet.py`) empaquetada como `.exe` via `flet pack`. Busca visitas de la cuenta BAT (account_id 95718) que no tienen `planned_date` (invisibles para la API) conectandose directamente a la BD PostgreSQL via Cloud SQL Proxy, y las limpia via PUT. Flujo de busqueda: BD primero → API /reference/ → API fallback +-30 dias. Requiere `cloud-sql-proxy.exe.exe` en `C:\` y autenticacion gcloud. Tambien existe `main.py` (version Streamlit anterior, obsoleta).
+
 ## Estructura
 ```
 main.py                              # Entry point: page config, sidebar, tema, dispatch
@@ -36,7 +41,8 @@ estilos.py                           # THEME dict + generador de CSS dinamico
 edicion.py                           # Pagina Edicion Masiva (UI + helpers API/CSV)
 pagina_webhooks.py                   # Pagina Webhooks Likewise (UI)
 webhook.py                           # Backend webhooks Likewise (URLs, envio HTTP)
-mover_visitas_likewise.py             # Pagina Mover Visitas Likewise (UI + busqueda/edicion por reference o ID)
+mover_visitas_likewise.py             # Pagina Mover Visitas Likewise (UI + busqueda por fecha + filtro reference/ID)
+eliminar_bat.py                      # Pagina Eliminar Visitas BAT (herramienta secundaria)
 bloqueo_lvp.py                       # Pagina Bloqueo LVP (UI + API configs Liverpool)
 reporte_visitas.py                   # Pagina Reporte Visitas/Rutas (UI + API reportes)
 checkout_general.py                  # Pagina Checkout General (UI + API send-webhooks)
@@ -48,6 +54,7 @@ requirements.txt                     # Dependencias para Streamlit Cloud
 runtime.txt                          # Pin Python 3.12 para Streamlit Cloud
 .gitignore                           # Exclusiones de git
 .claude/commands/simpliroute-api.md  # Skill con referencia de API SimpliRoute
+.claude/commands/ticket.md           # Skill para generar tickets/reportes de bug con plantilla estandar
 ```
 
 ## UI
@@ -84,14 +91,19 @@ runtime.txt                          # Pin Python 3.12 para Streamlit Cloud
 ## Flujo: Mover Visitas Likewise
 1. Usuario elige tipo de busqueda: **Reference** o **ID** de visita
 2. Selecciona una de las 4 cuentas Likewise (Telefonica, Entel, Omnicanalidad, Biobio)
-3. Ingresa valores a buscar (referencias o IDs, uno por linea)
-4. Elige fecha destino para mover las visitas
-5. Al procesar:
-   - GET busca cada valor: por reference (`/routes/visits/reference/{reference}/`) o por ID (`/routes/visits/{id}/`)
+3. Ingresa rango de fechas de origen (Desde/Hasta, max 7 dias) — la fecha en la que estan las visitas actualmente
+4. Ingresa valores a buscar (referencias o IDs, uno por linea)
+5. Elige fecha destino para mover las visitas
+6. **Buscar Visitas** — por cada dia del rango:
+   - `GET /v1/routes/visits/?planned_date={YYYY-MM-DD}` — trae todas las visitas del dia
+   - Combina todas las visitas del rango y filtra localmente por reference o ID
    - Muestra visitas encontradas vs no encontradas
+7. **Mover Visitas** — preview en tabla, luego:
    - Divide visitas en bloques (max 500) y envia via `PUT /routes/visits/`
-   - Respeta delay entre solicitudes (EDIT_DELAY de config.py)
-6. Muestra progreso en tiempo real, resultados por bloque, y estadisticas finales
+   - Respeta delay entre bloques (EDIT_DELAY de config.py)
+8. Muestra progreso en tiempo real, resultados por bloque, y estadisticas finales
+- Token se carga desde `st.secrets.api_config.token_{cuenta}` con `.strip()` para limpiar whitespace
+- Datos intermedios se persisten en `st.session_state` (prefijo `mvl_`) para sobrevivir reruns de Streamlit
 
 ## Flujo: Bloqueo LVP
 1. Token se carga automaticamente desde `st.secrets.api_config.auth_token`
@@ -155,11 +167,11 @@ streamlit run main.py
 - Auth: `Authorization: Token {CHECKOUT_TOKEN}` (desde secrets)
 
 ### SimpliRoute (Mover Visitas Likewise)
-- `GET /v1/routes/visits/reference/{reference}/` - Busqueda por reference (respuesta paginada `{count, results}` o lista)
-- `GET /v1/routes/visits/{id}/` - Busqueda por ID directo
+- `GET /v1/routes/visits/?planned_date={YYYY-MM-DD}` - Obtener todas las visitas de una fecha (una consulta por dia del rango, max 7 dias)
 - `PUT /v1/routes/visits/` - Edicion bulk: actualiza planned_date de visitas
 - Auth: `Authorization: Token {token_cuenta}` (desde secrets: token_telefonica, token_entel, token_omnicanalidad, token_biobio)
-- Payload: array de objetos con id, reference, title, address, planned_date (nueva fecha)
+- Payload PUT: array de objetos con id, reference, title, address, planned_date (nueva fecha)
+- Filtrado local: las visitas obtenidas por fecha se filtran por reference o ID segun la seleccion del usuario
 - Bloqueo maximo: 500 visitas por request, delay entre bloques de EDIT_DELAY segundos
 
 ### SimpliRoute (Unilever)
