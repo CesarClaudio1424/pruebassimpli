@@ -59,7 +59,21 @@ def _col_letter_to_index(letter):
 
 COL_AGENCIA = _col_letter_to_index("C")
 COL_CLIENTE = _col_letter_to_index("D")
+COL_X = _col_letter_to_index("X")
+COL_Y = _col_letter_to_index("Y")
 COL_SECTOR = _col_letter_to_index("AH")
+
+
+def _parse_coord(valor):
+    if valor is None:
+        return None
+    texto = str(valor).strip().replace(",", ".")
+    if not texto:
+        return None
+    try:
+        return float(texto)
+    except ValueError:
+        return None
 
 
 def _sin_acentos(texto):
@@ -97,14 +111,17 @@ def _extraer_registros(df):
     descartados_agencia = 0
     descartados_vacios = 0
 
+    max_col = max(COL_AGENCIA, COL_CLIENTE, COL_SECTOR, COL_X, COL_Y)
     for _, row in df.iterrows():
-        if len(row) <= max(COL_AGENCIA, COL_CLIENTE, COL_SECTOR):
+        if len(row) <= max_col:
             descartados_vacios += 1
             continue
 
         agencia_raw = str(row.iloc[COL_AGENCIA]).strip()
         cliente = str(row.iloc[COL_CLIENTE]).strip()
         sector = str(row.iloc[COL_SECTOR]).strip()
+        x = _parse_coord(row.iloc[COL_X])
+        y = _parse_coord(row.iloc[COL_Y])
 
         if not cliente:
             descartados_vacios += 1
@@ -119,6 +136,8 @@ def _extraer_registros(df):
             "cliente": cliente,
             "sector": sector,
             "agencia": agencia,
+            "x": x,
+            "y": y,
             "hora_inicio": HORA_INICIO_FIJA,
             "hora_final": HORA_FINAL_FIJA,
             "duracion": DURACION_FIJA,
@@ -173,7 +192,8 @@ def _seccion_actualizar_planeacion():
     if not archivo:
         render_tip(
             "Columnas esperadas: <strong>C</strong> = Agencia, <strong>D</strong> = Cliente, "
-            "<strong>AH</strong> = Sector. Solo se cargan filas de <strong>Tláhuac</strong> y <strong>Monterrey</strong>."
+            "<strong>X</strong> = Latitud, <strong>Y</strong> = Longitud, <strong>AH</strong> = Sector. "
+            "Solo se cargan filas de <strong>Tláhuac</strong> y <strong>Monterrey</strong>."
         )
         return
 
@@ -275,7 +295,7 @@ def pagina_asignacion_fija_uni():
             "Selecciona la accion a ejecutar.",
             "Sube el archivo Excel con la planeacion.",
             "Se filtran solo filas de Tláhuac y Monterrey (columna C).",
-            "Se extraen Cliente (D) y Sector (AH). Hora inicio/final y duracion son fijas.",
+            "Se extraen Cliente (D), Latitud (X), Longitud (Y) y Sector (AH). Hora inicio/final y duracion son fijas.",
             "Se hace upsert a Supabase: actualiza si el cliente existe, crea si no.",
         ],
         "El campo <strong>habilidad</strong> se cargara desde otro archivo en un paso posterior.",
