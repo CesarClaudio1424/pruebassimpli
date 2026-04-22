@@ -352,9 +352,40 @@ def _procesar_ruteo(df, nombre_original):
         df.iat[idx, RUTEO_COL_R] = ""
 
     _render_loader(loader, "Generando archivo...", "Escribiendo xlsx")
+
+    # Convertir columnas a numero: C(2), F(5), G(6), H(7), I(8), N(13)
+    for col_idx in [2, 5, 6, 7, 8, 13]:
+        if col_idx < df.shape[1]:
+            df.iloc[:, col_idx] = pd.to_numeric(df.iloc[:, col_idx], errors="coerce")
+
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
+        df.to_excel(writer, index=False, sheet_name="Ruteo")
+        from openpyxl.styles import Border, Font, PatternFill
+
+        ws = writer.sheets["Ruteo"]
+
+        # Quitar contorno y fondo a headers
+        no_border = Border()
+        sin_fondo = PatternFill(fill_type=None)
+        for cell in ws[1]:
+            cell.border = no_border
+            cell.fill = sin_fondo
+            cell.font = Font(bold=False)
+
+        # Formato numerico por columna (openpyxl es 1-indexed)
+        formatos = {
+            3: "0",        # C
+            6: "0",        # F
+            7: "0",        # G
+            8: "0.00000",  # H
+            9: "0.00000",  # I
+            14: "0",       # N
+        }
+        for col_1idx, fmt in formatos.items():
+            for row in range(2, ws.max_row + 1):
+                ws.cell(row=row, column=col_1idx).number_format = fmt
+
     buffer.seek(0)
     loader.empty()
 
