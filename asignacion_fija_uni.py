@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import unicodedata
+import io
 from utils import (
     render_header, render_guide, render_stat, render_label,
     render_tip, render_error_item,
@@ -285,6 +286,133 @@ def _seccion_actualizar_planeacion():
         render_tip("Todos los registros se subieron correctamente.")
 
 
+RUTEO_COL_D_HORA_INICIAL = 3
+RUTEO_COL_E_HORA_FINAL = 4
+RUTEO_COL_F_TIEMPO_SERVICIO = 5
+RUTEO_COL_G_NOTA = 6
+RUTEO_COL_H_LATITUD = 7
+RUTEO_COL_I_LONGITUD = 8
+RUTEO_COL_K_HABILIDADES = 10
+RUTEO_COL_Q = 16
+RUTEO_COL_R = 17
+
+
+def _fetch_planeacion(supabase, clientes):
+    datos = {}
+    for i in range(0, len(clientes), 500):
+        lote = clientes[i:i + 500]
+        try:
+            resp = supabase.table("planeacion_nacional").select(
+                "cliente,hora_inicio,hora_final,duracion,x,y"
+            ).in_("cliente", lote).execute()
+            for row in resp.data or []:
+                datos[row["cliente"]] = row
+        except Exception as e:
+            st.warning(f"Error consultando Supabase: {e}")
+            return datos
+    return datos
+
+
+def _procesar_ruteo(df, nombre_original):
+    loader = st.empty()
+    supabase = _get_supabase_client()
+
+    _render_loader(loader, "Consultando Supabase...", "Buscando coincidencias por nota")
+    notas = [str(v).strip() for v in df.iloc[:, RUTEO_COL_G_NOTA]]
+    notas_unicas = list({n for n in notas if n})
+    lookup = _fetch_planeacion(supabase, notas_unicas)
+
+    total = len(df)
+    _render_loader(loader, "Actualizando filas...", f"{total:,} filas, {len(lookup):,} clientes con match")
+
+    matched = 0
+    unmatched = 0
+    for idx in range(total):
+        nota = str(df.iat[idx, RUTEO_COL_G_NOTA]).strip()
+        data = lookup.get(nota) if nota else None
+
+        if data:
+            matched += 1
+            df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = data.get("hora_inicio") or "07:00"
+            df.iat[idx, RUTEO_COL_E_HORA_FINAL] = data.get("hora_final") or "23:00"
+            df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = data.get("duracion") if data.get("duracion") is not None else 7
+            if data.get("x") is not None:
+                df.iat[idx, RUTEO_COL_H_LATITUD] = data["x"]
+            if data.get("y") is not None:
+                df.iat[idx, RUTEO_COL_I_LONGITUD] = data["y"]
+            df.iat[idx, RUTEO_COL_K_HABILIDADES] = ""
+        else:
+            unmatched += 1
+            df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = "07:00"
+            df.iat[idx, RUTEO_COL_E_HORA_FINAL] = "23:00"
+            df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = 7
+            df.iat[idx, RUTEO_COL_K_HABILIDADES] = "Fuera"
+
+        df.iat[idx, RUTEO_COL_Q] = ""
+        df.iat[idx, RUTEO_COL_R] = ""
+
+    _render_loader(loader, "Generando archivo...", "Escribiendo xlsx")
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+    buffer.seek(0)
+    loader.empty()
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(render_stat(total, "Filas procesadas"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(matched, "Con match"), unsafe_allow_html=True)
+    with col3:
+        st.markdown(render_stat(unmatched, 'Sin match ("Fuera")'), unsafe_allow_html=True)
+
+    nombre_out = nombre_original.rsplit(".", 1)[0] + "_actualizado.xlsx"
+    st.download_button(
+        "Descargar archivo actualizado",
+        buffer,
+        file_name=nombre_out,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        use_container_width=True,
+    )
+
+
+def _seccion_generar_ruteo():
+    render_label("Archivo Excel de ruteo")
+    archivo = st.file_uploader(
+        "Sube el archivo de ruteo a actualizar",
+        type=["xlsx", "xls"],
+        key="afu_ruteo_archivo",
+    )
+
+    if not archivo:
+        render_tip(
+            "Se actualizan: <strong>D</strong> Hora Inicial, <strong>E</strong> Hora Final, "
+            "<strong>F</strong> Tiempo Servicio, <strong>H</strong> Latitud, <strong>I</strong> Longitud, "
+            "<strong>K</strong> Habilidades requeridas. Se vacian <strong>Q</strong> y <strong>R</strong>. "
+            "Match por columna <strong>G</strong> (Nota) vs <strong>cliente</strong> de Supabase. "
+            "Sin match: horarios por defecto, habilidad = <strong>Fuera</strong>, H/I sin tocar."
+        )
+        return
+
+    loader = st.empty()
+    _render_loader(loader, "Leyendo archivo...", f"Procesando {archivo.name}")
+    try:
+        df = pd.read_excel(archivo, dtype=str, header=0).fillna("")
+    except Exception as e:
+        loader.empty()
+        st.error(f"Error al leer el archivo: {e}")
+        return
+    loader.empty()
+
+    st.markdown(render_stat(len(df), "Filas en archivo"), unsafe_allow_html=True)
+    render_label("Vista previa (primeras 10 filas)")
+    st.dataframe(df.head(10), use_container_width=True)
+
+    if st.button("Procesar y generar archivo", type="primary", use_container_width=True):
+        _procesar_ruteo(df, archivo.name)
+
+
 def pagina_asignacion_fija_uni():
     render_header("Asignacion Fija Uni", "Planeacion nacional de visitas Unilever")
     render_guide(
@@ -299,11 +427,18 @@ def pagina_asignacion_fija_uni():
         "El campo <strong>habilidad</strong> se cargara desde otro archivo en un paso posterior.",
     )
 
-    accion = st.selectbox(
+    render_label("Accion")
+    accion = st.segmented_control(
         "Accion",
-        ["Actualizar planeacion nacional"],
+        ["Actualizar planeacion nacional", "Generar archivo de ruteo"],
+        default="Actualizar planeacion nacional",
         key="afu_accion",
+        label_visibility="collapsed",
     )
+
+    st.markdown("---")
 
     if accion == "Actualizar planeacion nacional":
         _seccion_actualizar_planeacion()
+    elif accion == "Generar archivo de ruteo":
+        _seccion_generar_ruteo()
