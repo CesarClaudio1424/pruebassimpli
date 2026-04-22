@@ -138,9 +138,6 @@ def _extraer_registros(df):
             "agencia": agencia,
             "x": x,
             "y": y,
-            "hora_inicio": HORA_INICIO_FIJA,
-            "hora_final": HORA_FINAL_FIJA,
-            "duracion": DURACION_FIJA,
         })
 
     # Dedupe por cliente (primero gana)
@@ -295,8 +292,9 @@ def pagina_asignacion_fija_uni():
             "Selecciona la accion a ejecutar.",
             "Sube el archivo Excel con la planeacion.",
             "Se filtran solo filas de Tláhuac y Monterrey (columna C).",
-            "Se extraen Cliente (D), Latitud (X), Longitud (Y) y Sector (AH). Hora inicio/final y duracion son fijas.",
-            "Se hace upsert a Supabase: actualiza si el cliente existe, crea si no.",
+            "Se extraen Cliente (D), Latitud (X), Longitud (Y) y Sector (AH).",
+            "Clientes nuevos: se crean con hora 07:00-23:00 y duracion 7 por defecto.",
+            "Clientes existentes: solo se actualizan sector, agencia, x, y. El resto queda intacto.",
         ],
         "El campo <strong>habilidad</strong> se cargara desde otro archivo en un paso posterior.",
     )
