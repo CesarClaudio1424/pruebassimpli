@@ -26,16 +26,52 @@ def validar_cuenta(token):
     return False, None
 
 
-def buscar_visitas_por_fecha(planned_date, token):
-    url = f"{API_BASE}/routes/visits/?planned_date={planned_date}"
-    try:
-        r = requests.get(url, headers=_headers(token), timeout=EDIT_TIMEOUT)
-        if r.status_code == 200:
+PAGINATED_PAGE_SIZE = 500
+
+
+def buscar_visitas_por_fecha(planned_date, token, on_progress=None):
+    """Recupera todas las visitas de una fecha via endpoint paginado.
+
+    Usa /routes/visits/paginated/ en vez de /routes/visits/?planned_date= porque el
+    viejo revienta con HTTP 500 cuando la fecha tiene >15k visitas (el backend no
+    puede serializar la respuesta completa).
+
+    on_progress: callback opcional (page, count_total, acumulado) para UI.
+    """
+    url = f"{API_BASE}/routes/visits/paginated/"
+    visitas = []
+    page = 1
+    while True:
+        try:
+            r = requests.get(
+                url,
+                headers=_headers(token),
+                params={"planned_date": planned_date, "page": page, "page_size": PAGINATED_PAGE_SIZE},
+                timeout=EDIT_TIMEOUT,
+            )
+        except requests.exceptions.RequestException as e:
+            return visitas, 0, str(e)
+
+        if r.status_code != 200:
+            return visitas, r.status_code, r.text[:500]
+
+        try:
             data = r.json()
-            return (data if isinstance(data, list) else []), r.status_code, None
-        return [], r.status_code, r.text[:500]
-    except requests.exceptions.RequestException as e:
-        return [], 0, str(e)
+        except ValueError as e:
+            return visitas, r.status_code, f"Respuesta no-JSON: {e}"
+
+        results = data.get("results", [])
+        count = data.get("count", 0)
+        visitas.extend(results)
+
+        if on_progress:
+            on_progress(page, count, len(visitas))
+
+        if not results or len(visitas) >= count:
+            break
+        page += 1
+
+    return visitas, 200, None
 
 
 def detectar_duplicados(visitas):
@@ -176,8 +212,18 @@ def _paso_fecha_y_busqueda(token, cuenta, label_boton, spinner_fn):
 
     st.markdown("---")
     if st.button(label_boton, use_container_width=True, type="primary"):
-        with st.spinner(f"Consultando visitas del {fecha_str}..."):
-            visitas, status, err = buscar_visitas_por_fecha(fecha_str, token)
+        barra = st.progress(0.0, text=f"Consultando visitas del {fecha_str}...")
+
+        def _on_progress(page, count_total, acumulado):
+            if count_total <= 0:
+                barra.progress(1.0, text="Sin visitas en la fecha")
+                return
+            total_pag = (count_total + PAGINATED_PAGE_SIZE - 1) // PAGINATED_PAGE_SIZE
+            pct = min(acumulado / count_total, 1.0)
+            barra.progress(pct, text=f"Pagina {page} de {total_pag} — {acumulado}/{count_total} visitas")
+
+        visitas, status, err = buscar_visitas_por_fecha(fecha_str, token, on_progress=_on_progress)
+        barra.empty()
 
         if err or status != 200:
             st.error(f"Error al consultar visitas (HTTP {status}): {err or 'sin detalle'}")

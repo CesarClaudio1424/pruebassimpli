@@ -8,7 +8,7 @@ App Streamlit multi-herramienta con navegacion por sidebar. Incluye doce herrami
 4. **Bloqueo LVP** — Configura bloqueo de edicion y modo seguridad en cuentas Liverpool via API SimpliRoute (POST).
 5. **Reporte Visitas/Rutas** — Genera reportes por rango de fechas dividido en sub-intervalos y los envia por correo via API SimpliRoute (GET).
 6. **Checkout General** — Envia webhooks de checkout a SimpliRoute para rutas y visitas de cualquier cuenta (POST).
-7. **Eliminacion de Items** — (herramienta secundaria)
+7. **Eliminar Visitas** — Busca todas las visitas de una fecha via endpoint paginado (`/routes/visits/paginated/`) y las "elimina" seteando `planned_date=2020-01-01` y `route=""`. Dos modos: duplicados (solo borra repetidos por reference conservando el ID mas bajo) o eliminacion total.
 8. **Unilever** — Actualiza cargas (load_2, load_3) y ventanas horarias por agencia via API SimpliRoute (PUT).
 9. **Zonas KML** — Crea zonas en SimpliRoute desde archivos KML (poligonos exportados de Google My Maps), o elimina zonas existentes de una cuenta.
 10. **Recuperar Visitas LVP** — Busca visitas Liverpool por referencia y las asigna a la ruta/fecha correcta (GET + PUT).
@@ -43,6 +43,7 @@ pagina_webhooks.py                   # Pagina Webhooks Likewise (UI)
 webhook.py                           # Backend webhooks Likewise (URLs, envio HTTP)
 mover_visitas_likewise.py             # Pagina Mover Visitas Likewise (UI + busqueda por fecha + filtro reference/ID)
 eliminar_bat.py                      # Pagina Eliminar Visitas BAT (herramienta secundaria)
+eliminar_visitas.py                  # Pagina Eliminar Visitas (busqueda paginada + PUT bulk)
 bloqueo_lvp.py                       # Pagina Bloqueo LVP (UI + API configs Liverpool)
 reporte_visitas.py                   # Pagina Reporte Visitas/Rutas (UI + API reportes)
 checkout_general.py                  # Pagina Checkout General (UI + API send-webhooks)
