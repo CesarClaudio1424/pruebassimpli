@@ -4,7 +4,7 @@ import pandas as pd
 import time
 from collections import defaultdict
 from datetime import date
-from config import API_BASE, REQUEST_TIMEOUT, EDIT_TIMEOUT, EDIT_DELAY, MAX_BLOCK_SIZE
+from config import API_BASE, REQUEST_TIMEOUT, EDIT_TIMEOUT, EDIT_DELAY, MAX_BLOCK_SIZE, MAX_RETRIES, RETRY_BASE_DELAY
 from utils import (
     render_header, render_guide, render_label, render_stat,
     render_cuenta_badge, render_tip,
@@ -29,36 +29,57 @@ def validar_cuenta(token):
 PAGINATED_PAGE_SIZE = 500
 
 
-def buscar_visitas_por_fecha(planned_date, token, on_progress=None):
+def buscar_visitas_por_fecha(planned_date, token, on_progress=None, on_retry=None):
     """Recupera todas las visitas de una fecha via endpoint paginado.
 
     Usa /routes/visits/paginated/ en vez de /routes/visits/?planned_date= porque el
     viejo revienta con HTTP 500 cuando la fecha tiene >15k visitas (el backend no
     puede serializar la respuesta completa).
 
+    GET es idempotente: reintentamos con backoff sobre 5xx y ConnectionError.
+
     on_progress: callback opcional (page, count_total, acumulado) para UI.
+    on_retry: callback opcional (page, attempt, max_retries, wait_s, err) para UI.
     """
     url = f"{API_BASE}/routes/visits/paginated/"
     visitas = []
     page = 1
     while True:
-        try:
-            r = requests.get(
-                url,
-                headers=_headers(token),
-                params={"planned_date": planned_date, "page": page, "page_size": PAGINATED_PAGE_SIZE},
-                timeout=EDIT_TIMEOUT,
-            )
-        except requests.exceptions.RequestException as e:
-            return visitas, 0, str(e)
+        data = None
+        last_status = 0
+        last_err = None
 
-        if r.status_code != 200:
-            return visitas, r.status_code, r.text[:500]
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                r = requests.get(
+                    url,
+                    headers=_headers(token),
+                    params={"planned_date": planned_date, "page": page, "page_size": PAGINATED_PAGE_SIZE},
+                    timeout=EDIT_TIMEOUT,
+                )
+                last_status = r.status_code
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                    except ValueError as e:
+                        return visitas, r.status_code, f"Respuesta no-JSON: {e}"
+                    break
+                last_err = r.text[:500]
+                if r.status_code < 500:
+                    return visitas, r.status_code, last_err
+            except requests.exceptions.RequestException as e:
+                last_status = 0
+                last_err = str(e)
 
-        try:
-            data = r.json()
-        except ValueError as e:
-            return visitas, r.status_code, f"Respuesta no-JSON: {e}"
+            if attempt >= MAX_RETRIES:
+                return visitas, last_status, last_err
+            wait = RETRY_BASE_DELAY * (2 ** attempt)
+            if on_retry:
+                on_retry(page, attempt + 1, MAX_RETRIES, wait, last_err)
+            time.sleep(wait)
+
+        if data is None:
+            return visitas, last_status, last_err
 
         results = data.get("results", [])
         count = data.get("count", 0)
@@ -107,7 +128,14 @@ def detectar_duplicados(visitas):
     return a_borrar, grupos
 
 
-def limpiar_visitas_bloque(visitas, token):
+def limpiar_visitas_bloque(visitas, token, on_retry=None):
+    """PUT bulk de limpieza con retry sobre 5xx y ConnectionError.
+
+    PUT con IDs explicitos es idempotente: si el servidor ya aplico el cambio
+    antes de la desconexion, reaplicarlo produce el mismo estado. Seguro reintentar.
+
+    on_retry: callback opcional (attempt, max_retries, wait_s, err) para la UI.
+    """
     url = f"{API_BASE}/routes/visits/"
     payload = [
         {
@@ -119,11 +147,29 @@ def limpiar_visitas_bloque(visitas, token):
         }
         for v in visitas
     ]
-    try:
-        r = requests.put(url, headers=_headers(token), json=payload, timeout=EDIT_TIMEOUT)
-        return r.status_code == 200, r.status_code, r.text
-    except requests.exceptions.RequestException as e:
-        return False, 0, str(e)
+    last_status = 0
+    last_resp = ""
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            r = requests.put(url, headers=_headers(token), json=payload, timeout=EDIT_TIMEOUT)
+            if r.status_code == 200:
+                return True, r.status_code, r.text
+            last_status = r.status_code
+            last_resp = r.text
+            if r.status_code < 500:
+                return False, r.status_code, r.text
+        except requests.exceptions.RequestException as e:
+            last_status = 0
+            last_resp = str(e)
+
+        if attempt >= MAX_RETRIES:
+            break
+        wait = RETRY_BASE_DELAY * (2 ** attempt)
+        if on_retry:
+            on_retry(attempt + 1, MAX_RETRIES, wait, last_resp)
+        time.sleep(wait)
+
+    return False, last_status, last_resp
 
 
 def _reset_estado():
@@ -213,16 +259,28 @@ def _paso_fecha_y_busqueda(token, cuenta, label_boton, spinner_fn):
     st.markdown("---")
     if st.button(label_boton, use_container_width=True, type="primary"):
         barra = st.progress(0.0, text=f"Consultando visitas del {fecha_str}...")
+        state = {"pct": 0.0}
 
         def _on_progress(page, count_total, acumulado):
             if count_total <= 0:
+                state["pct"] = 1.0
                 barra.progress(1.0, text="Sin visitas en la fecha")
                 return
             total_pag = (count_total + PAGINATED_PAGE_SIZE - 1) // PAGINATED_PAGE_SIZE
             pct = min(acumulado / count_total, 1.0)
+            state["pct"] = pct
             barra.progress(pct, text=f"Pagina {page} de {total_pag} — {acumulado}/{count_total} visitas")
 
-        visitas, status, err = buscar_visitas_por_fecha(fecha_str, token, on_progress=_on_progress)
+        def _on_retry(page, attempt, max_r, wait, err):
+            short = (err or "")[:80]
+            barra.progress(
+                state["pct"],
+                text=f"Pagina {page} — reintentando {attempt}/{max_r} en {wait}s ({short})",
+            )
+
+        visitas, status, err = buscar_visitas_por_fecha(
+            fecha_str, token, on_progress=_on_progress, on_retry=_on_retry
+        )
         barra.empty()
 
         if err or status != 200:
@@ -374,9 +432,20 @@ def _ejecutar_borrado(a_borrar, token, cuenta, fecha_str, descripcion):
     barra, contador, cont_bloques = create_progress_tracker(len(bloques), "Eliminando...")
     eliminadas = 0
     errores = []
+    retry_msg = st.empty()
+    retry_state = {"idx": 0, "total": len(bloques)}
+
+    def _on_retry(attempt, max_r, wait, err):
+        short = (err or "")[:80]
+        retry_msg.warning(
+            f"Bloque {retry_state['idx'] + 1}/{retry_state['total']}: "
+            f"reintentando {attempt}/{max_r} en {wait}s ({short})"
+        )
 
     for idx, bloque in enumerate(bloques):
-        ok, status, resp = limpiar_visitas_bloque(bloque, token)
+        retry_state["idx"] = idx
+        ok, status, resp = limpiar_visitas_bloque(bloque, token, on_retry=_on_retry)
+        retry_msg.empty()
 
         with cont_bloques:
             if ok:
