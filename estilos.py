@@ -353,6 +353,16 @@ def generar_css(THEME, dark):
         color: {"#e0e0e0" if dark else "#31333f"} !important;
     }}
 
+    /* Tabs */
+    .stTabs [data-baseweb="tab"] {{
+        color: {THEME["text"]} !important;
+        font-weight: 500 !important;
+    }}
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {{
+        color: {"white" if dark else "#2A2BA1"} !important;
+        font-weight: 600 !important;
+    }}
+
     /* Plan cards */
     .sr-plan-card {{
         border: 2px solid {THEME["input_border"]};
