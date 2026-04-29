@@ -1,11 +1,14 @@
 import streamlit as st
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from config import API_BASE, REQUEST_TIMEOUT
 from utils import (
     render_header, render_guide, render_label, render_stat,
     render_tip, render_error_item,
 )
+
+ROUTE_WORKERS = 10
 
 
 def _headers(token):
@@ -39,6 +42,15 @@ def actualizar_plan(token, plan, nueva_inicio, nueva_fin):
         return r.status_code, r.text, url, payload
     except requests.exceptions.RequestException as e:
         return 0, str(e), url, payload
+
+
+def actualizar_ruta_fecha(token, route_id, nueva_fecha):
+    url = f"{API_BASE}/routes/{route_id}/"
+    try:
+        r = requests.put(url, headers=_headers(token), json={"planned_date": nueva_fecha}, timeout=REQUEST_TIMEOUT)
+        return r.status_code, r.text, url
+    except requests.exceptions.RequestException as e:
+        return 0, str(e), url
 
 
 def pagina_cambiar_fecha_plan():
@@ -196,7 +208,7 @@ def pagina_cambiar_fecha_plan():
     else:
         st.error(f"Error al actualizar el plan (HTTP {status}).")
 
-    with st.expander("Detalle del request/response", expanded=(status < 200 or status >= 300)):
+    with st.expander("Detalle del request/response del plan", expanded=(status < 200 or status >= 300)):
         st.code(f"PUT {url}", language="bash")
         st.markdown("**Payload enviado:**")
         st.json(payload)
@@ -207,3 +219,41 @@ def pagina_cambiar_fecha_plan():
             st.json(json.loads(body))
         except Exception:
             st.code(body or "(vacio)")
+
+    if not (200 <= status < 300):
+        st.stop()
+
+    # --- Actualizar planned_date de cada ruta (cascadea a visitas) ---
+    route_ids = plan_sel.get("routes", [])
+    if not route_ids:
+        render_tip("El plan no tiene rutas asociadas.")
+        st.stop()
+
+    nueva_fecha_str = nueva_inicio.strftime("%Y-%m-%d")
+    total = len(route_ids)
+    st.markdown(render_stat(total, "ruta(s) a actualizar"), unsafe_allow_html=True)
+
+    barra = st.progress(0, text=f"Actualizando rutas... (0/{total})")
+    errores_rutas = []
+    completados = 0
+
+    with ThreadPoolExecutor(max_workers=ROUTE_WORKERS) as executor:
+        futures = {executor.submit(actualizar_ruta_fecha, token, rid, nueva_fecha_str): rid for rid in route_ids}
+        for future in as_completed(futures):
+            rid = futures[future]
+            s, b, u = future.result()
+            completados += 1
+            if not (200 <= s < 300):
+                errores_rutas.append({"route_id": rid, "status": s, "body": b, "url": u})
+            barra.progress(completados / total, text=f"Actualizando rutas... ({completados}/{total})")
+
+    barra.empty()
+    ok = total - len(errores_rutas)
+    st.success(f"{ok}/{total} rutas actualizadas. Las visitas de cada ruta quedan en {nueva_fecha_str}.")
+
+    if errores_rutas:
+        st.warning(f"{len(errores_rutas)} ruta(s) con error:")
+        for e in errores_rutas:
+            with st.expander(f"Error · {e['route_id']} (HTTP {e['status']})", expanded=True):
+                st.code(f"PUT {e['url']}", language="bash")
+                st.code(e["body"] or "(vacio)")
