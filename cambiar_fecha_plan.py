@@ -482,6 +482,8 @@ def _seccion_rutas():
                 all_sel = all(st.session_state.cfr_sel.get(rid, True) for rid in ids_plan)
                 label = f"{'✓ ' if all_sel else ''}{pname}"
                 with grid_cols[col_i]:
+                    if all_sel:
+                        st.markdown('<div class="sr-pill-sel"></div>', unsafe_allow_html=True)
                     if st.button(label, key=f"cfr_pill_{idx}", use_container_width=True):
                         new_val = not all_sel
                         for rid in ids_plan:
