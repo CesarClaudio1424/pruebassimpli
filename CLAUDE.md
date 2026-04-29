@@ -24,6 +24,8 @@ App Streamlit multi-herramienta con navegacion por sidebar. Incluye doce herrami
 - **Produccion:** CesarClaudio1424/simpliroute-tools (publico) — https://simpliroute-tools.streamlit.app/
 - **Pruebas:** CesarClaudio1424/pruebassimpli (publico)
 
+> **Regla de push:** Siempre hacer push solo al remote `pruebas`. Nunca hacer push a `origin` (produccion) sin instruccion explicita del usuario.
+
 ## Repositorios independientes
 Estas apps viven en repos propios, separados de simpliroute-tools, y tienen su propio deploy en Streamlit Cloud:
 - **Eliminacion de Visitas:** CesarClaudio1424/eliminacion-visitas — app de un solo archivo (`main.py`), elimina visitas en bloque via `POST /v1/bulk/delete/visits/`. No se agrega a este repo.
@@ -251,3 +253,67 @@ streamlit run main.py
 - Agencias: Tláhuac, Monterrey, Hermosillo, Mérida, Mexicali
 - Columnas normalizadas automaticamente (español → nombre interno) via `_COLUMN_MAP` en unilever.py
 - IDs vacios o con valor literal "None" se filtran y no se procesan
+
+---
+
+# Guia de razonamiento (reduce errores comunes)
+
+Lineamientos para mejorar la calidad de las respuestas. Sesgan hacia precaucion sobre velocidad — para tareas triviales, usa criterio.
+
+## 1. Pensar antes de codear
+
+**No asumir. No ocultar confusion. Hacer explicitos los tradeoffs.**
+
+Antes de implementar:
+- Declarar supuestos explicitamente. Si hay duda, preguntar.
+- Si existen varias interpretaciones, presentarlas — no elegir en silencio.
+- Si hay un enfoque mas simple, decirlo. Empujar de regreso cuando se justifique.
+- Si algo no esta claro, parar. Nombrar la confusion. Preguntar.
+
+## 2. Simplicidad primero
+
+**Codigo minimo que resuelva el problema. Nada especulativo.**
+
+- Sin features mas alla de lo pedido.
+- Sin abstracciones para codigo de un solo uso.
+- Sin "flexibilidad" o "configurabilidad" no solicitada.
+- Sin manejo de errores para escenarios imposibles.
+- Si escribiste 200 lineas y podrian ser 50, reescribir.
+
+Pregunta clave: "¿Un ingeniero senior diria que esto esta sobrecomplicado?" Si si, simplificar.
+
+## 3. Cambios quirurgicos
+
+**Tocar solo lo necesario. Limpiar solo lo que tu mismo ensuciaste.**
+
+Al editar codigo existente:
+- No "mejorar" codigo, comentarios o formato adyacente.
+- No refactorizar lo que no esta roto.
+- Respetar el estilo existente, aunque tu lo hicieras distinto.
+- Si notas codigo muerto no relacionado, mencionarlo — no borrarlo.
+
+Cuando tus cambios crean huerfanos:
+- Quitar imports/variables/funciones que TUS cambios dejaron sin uso.
+- No remover codigo muerto previo salvo que se pida.
+
+Test: cada linea cambiada debe trazarse directamente al pedido del usuario.
+
+## 4. Ejecucion guiada por objetivos
+
+**Definir criterios de exito. Iterar hasta verificar.**
+
+Convertir tareas en metas verificables:
+- "Agregar validacion" → "Escribir tests con inputs invalidos, luego hacerlos pasar"
+- "Arreglar el bug" → "Escribir un test que lo reproduzca, luego hacerlo pasar"
+- "Refactorizar X" → "Asegurar que los tests pasan antes y despues"
+
+Para tareas multi-step, declarar un plan breve:
+```
+1. [Paso] → verificar: [check]
+2. [Paso] → verificar: [check]
+3. [Paso] → verificar: [check]
+```
+
+Criterios de exito fuertes permiten iterar de forma independiente. Criterios debiles ("hazlo funcionar") obligan a clarificar todo el tiempo.
+
+**Estos lineamientos funcionan si:** menos cambios innecesarios en los diffs, menos reescrituras por sobrecomplicacion, y las preguntas aclaratorias llegan antes de implementar — no despues del error.
