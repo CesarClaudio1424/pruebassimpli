@@ -303,7 +303,7 @@ def _seccion_actualizar_planeacion():
         render_tip("Todos los registros se subieron correctamente.")
 
 
-HAB_COL_A_HABILIDAD = 0
+HAB_COL_B_HABILIDAD = 1
 HAB_COL_L_LATITUD = 11
 HAB_COL_M_LONGITUD = 12
 HAB_COL_S_CLIENTE = 18
@@ -559,7 +559,7 @@ def _seccion_actualizar_habilidades():
         render_tip(
             "Formato esperado: <strong>SimpliRoute_Plan_YYYY-MM-DD.xlsx</strong>. "
             "Columna <strong>S</strong> = Cliente (clave de match), "
-            "<strong>A</strong> = Habilidad, "
+            "<strong>B</strong> = Habilidad (formato R20020-MX01 → se extrae 20020), "
             "<strong>L</strong> = Latitud, "
             "<strong>M</strong> = Longitud. "
             "La habilidad se coloca en <strong>habilidad_1</strong> y se recorren las existentes."
@@ -586,7 +586,8 @@ def _seccion_actualizar_habilidades():
         if not cliente or cliente.lower() in ("nan", "none", ""):
             sin_cliente += 1
             continue
-        habilidad = str(row.iloc[HAB_COL_A_HABILIDAD]).strip() if len(row) > HAB_COL_A_HABILIDAD else ""
+        hab_raw = str(row.iloc[HAB_COL_B_HABILIDAD]).strip() if len(row) > HAB_COL_B_HABILIDAD else ""
+        habilidad = hab_raw.lstrip("R").split("-")[0] if hab_raw else ""
         lat = _parse_coord(row.iloc[HAB_COL_L_LATITUD]) if len(row) > HAB_COL_L_LATITUD else None
         lon = _parse_coord(row.iloc[HAB_COL_M_LONGITUD]) if len(row) > HAB_COL_M_LONGITUD else None
         registros.append({"cliente": cliente, "habilidad": habilidad, "x": lat, "y": lon})
