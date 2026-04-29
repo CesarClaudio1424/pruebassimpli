@@ -1,7 +1,7 @@
 # SimpliRoute Tools
 
 ## Descripcion
-App Streamlit multi-herramienta con navegacion por sidebar. Incluye doce herramientas:
+App Streamlit multi-herramienta con navegacion por sidebar. Incluye trece herramientas:
 1. **Edicion Masiva de Visitas** — Sube un CSV y edita visitas en bloque via API SimpliRoute (PUT).
 2. **Webhooks Likewise** — Envia webhooks a Google Cloud Functions para procesar rutas/visitas del middleware Likewise (POST).
 3. **Mover Visitas Likewise** — Busca visitas por rango de fechas, filtra por reference o ID, y las mueve a una fecha destino en las 4 cuentas Likewise (GET + PUT).
@@ -14,6 +14,7 @@ App Streamlit multi-herramienta con navegacion por sidebar. Incluye doce herrami
 10. **Recuperar Visitas LVP** — Busca visitas Liverpool por referencia y las asigna a la ruta/fecha correcta (GET + PUT).
 11. **Eliminar Visitas BAT** — (herramienta secundaria, solo busqueda por API). La version completa con acceso a BD es una app Flet standalone en `C:\Proyectos\EliminarBAT\`.
 12. **Asignacion Fija Uni** — Sube un Excel de planeacion Unilever y alimenta Supabase (tabla `planeacion_nacional`) con upsert por cliente. Filtra solo agencias Tláhuac y Monterrey.
+13. **Cambio de Fechas** — Tres sub-tabs: (a) Cambiar Fecha de Plan: mueve un plan y sus rutas a nueva fecha; (b) Cambiar Fecha de Rutas: actualiza `planned_date` de rutas seleccionadas (cascadea a visitas, no al plan); (c) Cambiar Fecha de Visitas: actualiza `planned_date` de visitas en bulk (no afecta rutas ni plan).
 
 ## Stack
 - **Python 3.12.3** con entorno virtual `.venv`
@@ -52,6 +53,7 @@ checkout_general.py                  # Pagina Checkout General (UI + API send-we
 unilever.py                          # Pagina Unilever (UI + API edicion cargas/ventanas por agencia)
 zonas_kml.py                         # Pagina Zonas KML (UI + API creacion/eliminacion de zonas)
 recuperar_lvp.py                     # Pagina Recuperar Visitas LVP (UI + busqueda hibrida + asignacion)
+cambiar_fecha_plan.py                # Pagina Cambio de Fechas: 3 tabs (Plan / Rutas / Visitas)
 cuentas.csv                          # Cuentas Liverpool (nombre, id, token)
 requirements.txt                     # Dependencias para Streamlit Cloud
 runtime.txt                          # Pin Python 3.12 para Streamlit Cloud
@@ -253,6 +255,42 @@ streamlit run main.py
 - Agencias: Tláhuac, Monterrey, Hermosillo, Mérida, Mexicali
 - Columnas normalizadas automaticamente (español → nombre interno) via `_COLUMN_MAP` en unilever.py
 - IDs vacios o con valor literal "None" se filtran y no se procesan
+
+## Flujo: Cambio de Fechas
+Tres sub-tabs en `cambiar_fecha_plan.py`. Todas validan token contra `/accounts/me/` y muestran badge de cuenta.
+
+### Tab 1 — Cambiar Fecha de Plan
+1. Token → validacion de cuenta
+2. Rango de busqueda → `GET /v1/routes/plans/?start_date=&end_date=`
+3. Tarjetas de planes en grid 2 columnas (seleccion con boton por tarjeta)
+4. Nuevas fechas de inicio/fin → `PUT /v1/routes/plans/{uuid}/` con objeto completo
+5. Si el PUT del plan es exitoso: `PUT /v1/routes/routes/{uuid}/` por cada ruta del plan (10 workers paralelos) con objeto completo (GET previo si no se tiene)
+
+### Tab 2 — Cambiar Fecha de Rutas
+1. Token → validacion
+2. Fecha origen → `GET /v1/routes/routes/?planned_date=` + `GET /v1/plans/{fecha}/vehicles/` (paralelo, para nombres de vehiculo/conductor)
+3. Nombres de planes: `GET /v1/routes/plans/{uuid}/` en paralelo por cada UUID unico
+4. Botones de filtro por plan (columna izquierda: "Todas"; columna derecha: grid 2 cols con nombre completo de plan). Seleccionado = azul primario.
+5. Tabla `st.data_editor`: ☑ | Plan | ID de ruta | Vehiculo | Conductor | Visitas. Empieza sin seleccion.
+6. Nueva fecha → `PUT /v1/routes/routes/{uuid}/` con objeto completo (10 workers paralelos)
+- **Advertencia:** cambiar fecha de rutas cascadea a sus visitas. El plan NO se modifica.
+
+### Tab 3 — Cambiar Fecha de Visitas
+1. Token → validacion
+2. Fecha origen → `GET /v1/routes/visits/paginated/` (con retry/backoff, igual que Eliminar Visitas)
+3. Nueva fecha → `PUT /v1/routes/visits/` bulk en bloques de MAX_BLOCK_SIZE
+- **Nota:** solo cambia visitas. Rutas y plan NO se modifican.
+
+### SimpliRoute (Cambio de Fechas)
+- `GET /v1/routes/plans/?start_date={}&end_date={}` — listar planes por rango
+- `PUT /v1/routes/plans/{uuid}/` — actualizar plan (objeto completo requerido)
+- `GET /v1/routes/routes/?planned_date={YYYY-MM-DD}` — listar rutas por fecha
+- `PUT /v1/routes/routes/{uuid}/` — actualizar ruta (objeto completo requerido; solo `planned_date` da HTTP 400)
+- `GET /v1/plans/{YYYY-MM-DD}/vehicles/` — vehiculo y conductor por ruta de una fecha
+- `GET /v1/routes/plans/{uuid}/` — nombre completo de un plan
+- `GET /v1/routes/visits/paginated/` — visitas paginadas por fecha (con retry)
+- `PUT /v1/routes/visits/` — edicion bulk de visitas
+- Auth: `Authorization: Token {token}` (ingresado manualmente)
 
 ---
 
