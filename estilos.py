@@ -100,6 +100,7 @@ def generar_css(THEME, dark):
         min-height: 2.4rem !important;
         line-height: 1.3 !important;
         padding: 0.4rem 0.8rem !important;
+        color: {THEME["text"]} !important;
     }}
 
     /* Solo boton primario con gradiente */
