@@ -60,7 +60,7 @@ def actualizar_plan(token, plan, nueva_inicio, nueva_fin):
 
 
 def actualizar_ruta_fecha(token, route_id, nueva_fecha):
-    url = f"{API_BASE}/routes/{route_id}/"
+    url = f"{API_BASE}/routes/routes/{route_id}/"
     try:
         r = requests.put(url, headers=_headers(token), json={"planned_date": nueva_fecha}, timeout=REQUEST_TIMEOUT)
         return r.status_code, r.text, url
@@ -72,7 +72,7 @@ def actualizar_ruta_fecha(token, route_id, nueva_fecha):
 
 def listar_rutas(token, planned_date):
     rutas = []
-    url = f"{API_BASE}/routes/?planned_date={planned_date}"
+    url = f"{API_BASE}/routes/routes/?planned_date={planned_date}"
     try:
         while url:
             r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
