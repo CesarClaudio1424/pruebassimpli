@@ -423,8 +423,14 @@ def _seccion_rutas():
     for r in rutas:
         plan_groups[r.get("plan", "sin-plan")].append(r)
 
-    n_pills = 1 + len(plan_groups)
-    pill_cols = st.columns(n_pills)
+    # Pesos proporcionales al largo del label para que los botones no queden iguales
+    plan_labels = []
+    for uuid in plan_groups:
+        pname = plan_names.get(uuid, uuid[:8]) if uuid != "sin-plan" else "Sin plan"
+        plan_labels.append((uuid, pname))
+
+    weights = [max(len("Todas"), 5)] + [max(len(lbl), 5) for _, lbl in plan_labels]
+    pill_cols = st.columns(weights)
 
     with pill_cols[0]:
         if st.button("Todas", key="cfr_pill_todas", use_container_width=True):
@@ -432,10 +438,9 @@ def _seccion_rutas():
             st.session_state.pop("cfr_editor", None)
             st.rerun()
 
-    for i, uuid in enumerate(plan_groups):
+    for i, (uuid, pname) in enumerate(plan_labels):
         ids_plan = [r["id"] for r in plan_groups[uuid]]
         all_sel = all(st.session_state.cfr_sel.get(rid, True) for rid in ids_plan)
-        pname = plan_names.get(uuid, uuid[:8]) if uuid != "sin-plan" else "Sin plan"
         label = f"{'✓ ' if all_sel else ''}{pname}"
         with pill_cols[i + 1]:
             if st.button(label, key=f"cfr_pill_{i}", use_container_width=True):
@@ -453,7 +458,7 @@ def _seccion_rutas():
         {
             "☑": st.session_state.cfr_sel.get(r["id"], True),
             "Plan": plan_names.get(r.get("plan", ""), "Sin plan"),
-            "ID de ruta": str(r["id"]),
+            "ID de ruta": str(r["id"])[:8] + "…",
             "Estado": STATUS_MAP.get(r.get("status", ""), r.get("status", "")),
             "Visitas": r.get("total_visits", 0),
         }
@@ -464,8 +469,8 @@ def _seccion_rutas():
         df,
         column_config={
             "☑": st.column_config.CheckboxColumn(width="small"),
-            "Plan": st.column_config.TextColumn(width="large"),
-            "ID de ruta": st.column_config.TextColumn(width="medium"),
+            "Plan": st.column_config.TextColumn(width="medium"),
+            "ID de ruta": st.column_config.TextColumn(width="small"),
             "Estado": st.column_config.TextColumn(width="small"),
             "Visitas": st.column_config.NumberColumn("Visitas", width="small"),
         },
