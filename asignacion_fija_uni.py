@@ -655,6 +655,7 @@ def _seccion_actualizar_habilidades():
         rotada = _rotar_habilidades(actuales, nueva_hab)
         payload.append({
             "cliente": cliente,
+            "agencia": agencia,
             "x": r["x"],
             "y": r["y"],
             "habilidad_1": rotada[0],
