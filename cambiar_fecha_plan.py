@@ -61,10 +61,17 @@ def actualizar_plan(token, plan, nueva_inicio, nueva_fin):
         return 0, str(e), url, payload
 
 
-def actualizar_ruta_fecha(token, route_id, nueva_fecha):
+def actualizar_ruta_fecha(token, route_id, nueva_fecha, route_data=None):
     url = f"{API_BASE}/routes/routes/{route_id}/"
     try:
-        r = requests.put(url, headers=_headers(token), json={"planned_date": nueva_fecha}, timeout=REQUEST_TIMEOUT)
+        if route_data is None:
+            r_get = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
+            if r_get.status_code != 200:
+                return r_get.status_code, r_get.text, url
+            route_data = r_get.json()
+        payload = dict(route_data)
+        payload["planned_date"] = nueva_fecha
+        r = requests.put(url, headers=_headers(token), json=payload, timeout=REQUEST_TIMEOUT)
         return r.status_code, r.text, url
     except requests.exceptions.RequestException as e:
         return 0, str(e), url
@@ -549,8 +556,12 @@ def _seccion_rutas():
     errores = []
     completados = 0
 
+    rutas_by_id = {r["id"]: r for r in rutas_sorted}
     with ThreadPoolExecutor(max_workers=ROUTE_WORKERS) as executor:
-        futures = {executor.submit(actualizar_ruta_fecha, token, rid, nueva_fecha_str): rid for rid in route_ids}
+        futures = {
+            executor.submit(actualizar_ruta_fecha, token, rid, nueva_fecha_str, rutas_by_id.get(rid)): rid
+            for rid in route_ids
+        }
         for future in as_completed(futures):
             rid = futures[future]
             s, b, u = future.result()
