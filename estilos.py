@@ -93,17 +93,6 @@ def generar_css(THEME, dark):
         margin-bottom: 0.3rem;
     }}
 
-    /* Plan pill seleccionado: marcador adyacente activa color primario */
-    div[data-testid="stMarkdownContainer"]:has(.sr-pill-sel) + div button {{
-        background: linear-gradient(135deg, #2A2BA1 0%, #1a1b6b 100%) !important;
-        color: white !important;
-        border: none !important;
-    }}
-    div[data-testid="stMarkdownContainer"]:has(.sr-pill-sel) + div button:hover {{
-        box-shadow: 0 4px 12px rgba(42, 43, 161, 0.35) !important;
-        transform: translateY(-1px) !important;
-    }}
-
     /* Botones secundarios: texto completo sin cortar */
     button[data-testid="stBaseButton-secondary"] {{
         white-space: normal !important;
