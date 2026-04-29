@@ -30,7 +30,7 @@ def _headers(token):
 
 
 def buscar_por_reference(reference, token):
-    """Returns (visita | None, req_info dict)."""
+    """Returns (lista_visitas, req_info dict). Lista puede tener 0, 1 o N visitas."""
     url = f"{API_BASE}/routes/visits/reference/{reference}/"
     info = {"url": url, "status": None, "response": None}
     try:
@@ -42,17 +42,15 @@ def buscar_por_reference(reference, token):
             info["response"] = r.text
         if r.status_code == 200:
             data = r.json()
-            # Respuesta paginada: {"count": N, "results": [...]}
             if isinstance(data, dict) and "results" in data:
-                results = data["results"]
-                return (results[0] if results else None), info
+                return data["results"], info
             if isinstance(data, list):
-                return (data[0] if data else None), info
-            if isinstance(data, dict) and data.get("id"):
                 return data, info
+            if isinstance(data, dict) and data.get("id"):
+                return [data], info
     except requests.exceptions.RequestException as e:
         info["response"] = str(e)
-    return None, info
+    return [], info
 
 
 def _buscar_en_fecha(fecha_str, reference, token):
@@ -128,13 +126,13 @@ def asignar_visita(visit_id, route_id, planned_date, token):
         return 0, str(e)
 
 
-def _mostrar_req_response(label, url, status, response):
-    st.markdown(f"**{label}**")
-    st.code(f"GET {url}", language="bash")
-    if status is not None:
-        st.markdown(f"Status: `{status}`")
-    if response is not None:
-        st.json(response)
+def _visita_resuelta(idx, r):
+    """Returns the resolved visita for a result row, considering user disambiguation."""
+    if r["visita"]:
+        return r["visita"]
+    if r["necesita_seleccion"]:
+        return st.session_state.get("recuperar_selecciones", {}).get(idx)
+    return None
 
 
 def pagina_recuperar_lvp():
@@ -147,7 +145,7 @@ def pagina_recuperar_lvp():
         steps=[
             "<strong>Selecciona la cuenta</strong> — Elige la tienda Liverpool donde buscar las visitas.",
             "<strong>Agrega filas</strong> — Referencia de la visita, nombre del vehiculo destino y fecha de la ruta.",
-            "<strong>Buscar</strong> — Se busca primero por referencia directa; si no aparece, se escanea un rango de \u00b130 dias en paralelo.",
+            "<strong>Buscar</strong> — Se busca primero por referencia directa; si no aparece, se escanea un rango de ±30 dias en paralelo.",
             "<strong>Procesar</strong> — Revisa los resultados y confirma la asignacion a la ruta.",
         ],
         tip="El nombre del vehiculo debe coincidir (sin importar mayusculas/minusculas) con el registrado en SimpliRoute.",
@@ -159,7 +157,7 @@ def pagina_recuperar_lvp():
         st.error("No se encontro el archivo `cuentas.csv`.")
         st.stop()
 
-    render_label("Paso 1 \u00b7 Cuenta Liverpool")
+    render_label("Paso 1 · Cuenta Liverpool")
     cuenta_nombre = st.selectbox(
         "Cuenta",
         list(cuentas.keys()),
@@ -178,7 +176,7 @@ def pagina_recuperar_lvp():
         ]
 
     # --- Filas dinamicas ---
-    render_label("Paso 2 \u00b7 Visitas a recuperar")
+    render_label("Paso 2 · Visitas a recuperar")
     h1, h2, h3, _ = st.columns([3, 3, 2, 1])
     h1.markdown('<div class="sr-label" style="margin-bottom:0.2rem;">Referencia</div>', unsafe_allow_html=True)
     h2.markdown('<div class="sr-label" style="margin-bottom:0.2rem;">Vehiculo</div>', unsafe_allow_html=True)
@@ -212,7 +210,7 @@ def pagina_recuperar_lvp():
             )
         with col4:
             if len(st.session_state.recuperar_filas) > 1:
-                if st.button("\u2715", key=f"del_{i}", use_container_width=True):
+                if st.button("✕", key=f"del_{i}", use_container_width=True):
                     st.session_state.recuperar_filas.pop(i)
                     st.session_state.pop("recuperar_resultados", None)
                     st.rerun()
@@ -236,6 +234,7 @@ def pagina_recuperar_lvp():
             st.warning("Ingresa al menos una referencia y vehiculo.")
         else:
             st.session_state.pop("recuperar_resultados", None)
+            st.session_state.pop("recuperar_selecciones", None)
             total_busqueda = len(filas_validas)
             barra_buscar = st.progress(0, text="Buscando...")
             resultados = []
@@ -247,22 +246,31 @@ def pagina_recuperar_lvp():
                 fecha_display = fila["fecha"].strftime("%d/%m/%Y")
 
                 barra_buscar.progress((i + 0.3) / total_busqueda, text=f"Buscando referencia {reference}...")
-                visita, req_ref = buscar_por_reference(reference, token)
+                candidatas, req_ref = buscar_por_reference(reference, token)
+                # Ordenar de mas reciente a mas antigua (ID desc)
+                candidatas = sorted(candidatas, key=lambda v: v.get("id", 0), reverse=True)
 
                 req_fallback = None
-                if not visita:
+                if not candidatas:
                     barra_buscar.progress((i + 0.6) / total_busqueda, text=f"Fallback fechas {reference}...")
-                    visita, req_fallback = buscar_por_fechas(reference, token)
+                    visita_fb, req_fallback = buscar_por_fechas(reference, token)
+                    candidatas = [visita_fb] if visita_fb else []
+
+                # Auto-selecciona si hay exactamente 1 resultado
+                visita = candidatas[0] if len(candidatas) == 1 else None
+                necesita_seleccion = len(candidatas) > 1
 
                 barra_buscar.progress((i + 0.9) / total_busqueda, text=f"Buscando ruta para {vehiculo}...")
-                route_id, req_veh = obtener_ruta_id(vehiculo, fecha_str, token) if visita else (None, None)
+                route_id, req_veh = obtener_ruta_id(vehiculo, fecha_str, token) if candidatas else (None, None)
 
                 resultados.append({
                     "reference": reference,
                     "vehiculo": vehiculo,
                     "fecha_str": fecha_str,
                     "fecha_display": fecha_display,
+                    "visitas_candidatas": candidatas,
                     "visita": visita,
+                    "necesita_seleccion": necesita_seleccion,
                     "route_id": route_id,
                     "req_ref": req_ref,
                     "req_fallback": req_fallback,
@@ -278,13 +286,28 @@ def pagina_recuperar_lvp():
         st.stop()
 
     resultados = st.session_state.recuperar_resultados
-    listos = [r for r in resultados if r["visita"] and r["route_id"]]
-    sin_visita = [r for r in resultados if not r["visita"]]
-    sin_ruta = [r for r in resultados if r["visita"] and not r["route_id"]]
+
+    if "recuperar_selecciones" not in st.session_state:
+        st.session_state.recuperar_selecciones = {}
+    selecciones = st.session_state.recuperar_selecciones
+
+    listos = [
+        (i, r) for i, r in enumerate(resultados)
+        if _visita_resuelta(i, r) is not None and r["route_id"]
+    ]
+    sin_visita = [r for r in resultados if not r["visitas_candidatas"]]
+    sin_ruta = [
+        (i, r) for i, r in enumerate(resultados)
+        if _visita_resuelta(i, r) is not None and not r["route_id"]
+    ]
+    pendientes = [
+        (i, r) for i, r in enumerate(resultados)
+        if r["necesita_seleccion"] and i not in selecciones
+    ]
 
     render_label("Resultados de busqueda")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(render_stat(len(listos), "listos para procesar"), unsafe_allow_html=True)
     with col2:
@@ -305,54 +328,121 @@ def pagina_recuperar_lvp():
             ),
             unsafe_allow_html=True,
         )
+    with col4:
+        st.markdown(
+            render_stat(
+                len(pendientes),
+                "pendiente de seleccion",
+                style="background: linear-gradient(135deg, #7b2ff7 0%, #5b0de0 100%);",
+            ),
+            unsafe_allow_html=True,
+        )
 
-    for r in resultados:
-        if r["visita"] and r["route_id"]:
-            icon, color = "\u2713", "#29AB55"
-            titulo_estado = "lista"
-        elif r["visita"]:
-            icon, color = "\u26a0", "#f59e0b"
-            titulo_estado = "visita ok / sin ruta"
+    for idx, r in enumerate(resultados):
+        candidatas = r["visitas_candidatas"]
+        visita_actual = _visita_resuelta(idx, r)
+
+        if r["necesita_seleccion"]:
+            ya_seleccionada = selecciones.get(idx)
+            if ya_seleccionada:
+                icon = "✓"
+                titulo_estado = f"visita seleccionada (ID {ya_seleccionada['id']})"
+            else:
+                icon = "?"
+                titulo_estado = f"selecciona entre {len(candidatas)} visitas encontradas"
+
+            label_expander = f"{icon} Ref {r['reference']} · {r['vehiculo']} · {r['fecha_display']} — {titulo_estado}"
+            with st.expander(label_expander, expanded=not ya_seleccionada):
+                st.markdown(f"Se encontraron **{len(candidatas)}** visitas con esta referencia. Selecciona la correcta:")
+
+                df_sel = pd.DataFrame([
+                    {"ID": v.get("id"), "Reference": str(v.get("reference", ""))}
+                    for v in candidatas
+                ])
+                event = st.dataframe(
+                    df_sel,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    use_container_width=True,
+                    key=f"disamb_{idx}",
+                    hide_index=True,
+                )
+                if event.selection.rows:
+                    selecciones[idx] = candidatas[event.selection.rows[0]]
+
+                with st.expander("Ver detalles de todas las candidatas"):
+                    df_detail = pd.DataFrame([
+                        {
+                            "ID": v.get("id"),
+                            "Reference": str(v.get("reference", "")),
+                            "Titulo": v.get("title", ""),
+                            "Fecha": v.get("planned_date", ""),
+                            "Status": v.get("status", ""),
+                            "SKU": v.get("sku", ""),
+                        }
+                        for v in candidatas
+                    ])
+                    st.dataframe(df_detail, use_container_width=True, hide_index=True)
+
+                # --- Busqueda por reference ---
+                req_ref = r["req_ref"]
+                with st.expander("Ver detalles del request API"):
+                    st.code(f"GET {req_ref['url']}", language="bash")
+                    st.markdown(f"Status: `{req_ref['status']}`")
+                    st.json(req_ref["response"])
+
         else:
-            icon, color = "\u2717", "#d32f2f"
-            titulo_estado = "no encontrada"
+            if visita_actual and r["route_id"]:
+                icon = "✓"
+                titulo_estado = "lista"
+            elif visita_actual:
+                icon = "⚠"
+                titulo_estado = "visita ok / sin ruta"
+            else:
+                icon = "✗"
+                titulo_estado = "no encontrada"
 
-        has_error = not r["visita"] or not r["route_id"]
-        label_expander = f"{icon} Ref {r['reference']} · {r['vehiculo']} · {r['fecha_display']} — {titulo_estado}"
+            has_error = visita_actual is None or not r["route_id"]
+            label_expander = f"{icon} Ref {r['reference']} · {r['vehiculo']} · {r['fecha_display']} — {titulo_estado}"
 
-        with st.expander(label_expander, expanded=has_error):
-            # --- Busqueda por reference ---
-            req_ref = r["req_ref"]
-            st.markdown("**Busqueda por referencia directa:**")
-            st.code(f"GET {req_ref['url']}", language="bash")
-            st.markdown(f"Status: `{req_ref['status']}`")
-            st.json(req_ref["response"])
+            with st.expander(label_expander, expanded=has_error):
+                # --- Busqueda por reference ---
+                req_ref = r["req_ref"]
+                st.markdown("**Busqueda por referencia directa:**")
+                st.code(f"GET {req_ref['url']}", language="bash")
+                st.markdown(f"Status: `{req_ref['status']}`")
+                st.json(req_ref["response"])
 
-            # --- Fallback por fechas ---
-            req_fb = r.get("req_fallback")
-            if req_fb is not None:
-                st.markdown(f"**Fallback — escaneadas {req_fb['total_fechas']} fechas (\u00b1{FALLBACK_DAYS} dias):**")
-                if req_fb["url"]:
-                    st.markdown(f"Encontrada el `{req_fb['fecha_encontrada']}`")
-                    st.code(f"GET {req_fb['url']}", language="bash")
-                    st.json(req_fb["response"])
-                else:
-                    st.markdown("No encontrada en ninguna fecha del rango.")
+                # --- Fallback por fechas ---
+                req_fb = r.get("req_fallback")
+                if req_fb is not None:
+                    st.markdown(f"**Fallback — escaneadas {req_fb['total_fechas']} fechas (±{FALLBACK_DAYS} dias):**")
+                    if req_fb["url"]:
+                        st.markdown(f"Encontrada el `{req_fb['fecha_encontrada']}`")
+                        st.code(f"GET {req_fb['url']}", language="bash")
+                        st.json(req_fb["response"])
+                    else:
+                        st.markdown("No encontrada en ninguna fecha del rango.")
 
-            # --- Busqueda de ruta ---
-            req_veh = r.get("req_veh")
-            if req_veh:
-                st.markdown("**Busqueda de ruta por vehiculo:**")
-                st.code(f"GET {req_veh['url']}", language="bash")
-                st.markdown(f"Status: `{req_veh['status']}`")
-                if req_veh["response_match"]:
-                    st.json(req_veh["response_match"])
-                elif req_veh["response_full"] is not None:
-                    st.markdown("Vehiculo no encontrado. Vehiculos disponibles en esa fecha:")
-                    st.json(req_veh["response_full"])
+                # --- Busqueda de ruta ---
+                req_veh = r.get("req_veh")
+                if req_veh:
+                    st.markdown("**Busqueda de ruta por vehiculo:**")
+                    st.code(f"GET {req_veh['url']}", language="bash")
+                    st.markdown(f"Status: `{req_veh['status']}`")
+                    if req_veh["response_match"]:
+                        st.json(req_veh["response_match"])
+                    elif req_veh["response_full"] is not None:
+                        st.markdown("Vehiculo no encontrado. Vehiculos disponibles en esa fecha:")
+                        st.json(req_veh["response_full"])
 
     if not listos:
+        if pendientes:
+            st.info("Selecciona la visita correcta en cada fila con duplicados para continuar.")
         st.stop()
+
+    if pendientes:
+        st.info(f"Hay {len(pendientes)} referencia(s) con seleccion pendiente. Puedes procesar las {len(listos)} ya resueltas o completar las selecciones primero.")
 
     st.markdown("---")
 
@@ -364,8 +454,9 @@ def pagina_recuperar_lvp():
     exitosos = 0
     barra, contador, contenedor_errores = create_progress_tracker(total, "Asignando visitas...")
 
-    for i, r in enumerate(listos):
-        status, resp_text = asignar_visita(r["visita"]["id"], r["route_id"], r["fecha_str"], token)
+    for i, (idx, r) in enumerate(listos):
+        visita = _visita_resuelta(idx, r)
+        status, resp_text = asignar_visita(visita["id"], r["route_id"], r["fecha_str"], token)
         if 200 <= status < 300:
             exitosos += 1
         else:
@@ -378,5 +469,6 @@ def pagina_recuperar_lvp():
     if exitosos > 0:
         st.success(f"{exitosos} de {total} visitas asignadas correctamente")
         st.session_state.pop("recuperar_resultados", None)
+        st.session_state.pop("recuperar_selecciones", None)
     if exitosos < total:
         st.error(f"{total - exitosos} visita(s) con error al asignar")
