@@ -1,6 +1,7 @@
 import json
 import time
 from collections import defaultdict
+import pandas as pd
 import streamlit as st
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -361,7 +362,8 @@ def _seccion_rutas():
     fecha_origen = st.date_input("Fecha origen", value=date.today(), format="DD/MM/YYYY", key="cfr_fecha_origen")
 
     if st.button("Buscar rutas", key="cfr_buscar"):
-        st.session_state.pop("cfr_rutas", None)
+        for k in ("cfr_rutas", "cfr_plan_names", "cfr_sel", "cfr_editor"):
+            st.session_state.pop(k, None)
         with st.spinner("Consultando rutas..."):
             rutas, status, err = listar_rutas(token, fecha_origen.strftime("%Y-%m-%d"))
         if status != 200:
@@ -379,52 +381,111 @@ def _seccion_rutas():
         render_tip("No se encontraron rutas para esa fecha.")
         return
 
+    # --- Obtener nombres de planes en paralelo ---
+    plan_uuids = list({r.get("plan") for r in rutas if r.get("plan")})
+    if "cfr_plan_names" not in st.session_state:
+        nombres = {}
+        def _fetch_plan(uuid):
+            try:
+                resp = requests.get(
+                    f"{API_BASE}/routes/plans/{uuid}/",
+                    headers=_headers(token),
+                    timeout=REQUEST_TIMEOUT,
+                )
+                if resp.status_code == 200:
+                    return uuid, resp.json().get("name", uuid[:8])
+            except Exception:
+                pass
+            return uuid, uuid[:8]
+        with st.spinner("Cargando nombres de planes..."):
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                for uuid, name in ex.map(_fetch_plan, plan_uuids):
+                    nombres[uuid] = name
+        st.session_state.cfr_plan_names = nombres
+    plan_names = st.session_state.cfr_plan_names
+
+    # --- Inicializar / sincronizar seleccion ---
+    if "cfr_sel" not in st.session_state:
+        st.session_state.cfr_sel = {r["id"]: True for r in rutas}
+
+    # Sincronizar ediciones manuales del data_editor al session_state
+    editor_state = st.session_state.get("cfr_editor", {})
+    for row_idx_str, changes in editor_state.get("edited_rows", {}).items():
+        if "☑" in changes:
+            rutas_sorted_tmp = sorted(rutas, key=lambda x: plan_names.get(x.get("plan", ""), "~"))
+            rid = rutas_sorted_tmp[int(row_idx_str)]["id"]
+            st.session_state.cfr_sel[rid] = changes["☑"]
+
+    # --- Pills de filtro por plan ---
     render_label("Paso 3 · Selecciona las rutas a actualizar")
 
-    # Agrupar por plan UUID
-    grupos = defaultdict(list)
+    plan_groups = defaultdict(list)
     for r in rutas:
-        grupos[r.get("plan", "sin-plan")].append(r)
+        plan_groups[r.get("plan", "sin-plan")].append(r)
 
-    _STATUS_CSS = {"pending": "sr-status-pending", "started": "sr-status-started", "finished": "sr-status-finished"}
-    _STATUS_LABEL = {"pending": "Pendiente", "started": "En curso", "finished": "Finalizada"}
+    n_pills = 1 + len(plan_groups)
+    pill_cols = st.columns(n_pills)
 
-    seleccionadas_ids = []
-    for g_i, (plan_uuid, group_rutas) in enumerate(grupos.items()):
-        uuid_short = plan_uuid[:8] if plan_uuid != "sin-plan" else "sin plan"
-        st.markdown(
-            f'<div class="sr-route-group-header">Grupo {g_i + 1} &nbsp;·&nbsp; plan {uuid_short}…  ({len(group_rutas)} ruta(s))</div>',
-            unsafe_allow_html=True,
-        )
-        cols = st.columns(3)
-        for j, r in enumerate(group_rutas):
-            rid = r.get("id", "")
-            status = r.get("status", "pending")
-            visits = r.get("total_visits", "?")
-            ref = r.get("reference") or ""
-            display_id = ref if ref else (str(rid)[:8] + "…")
-            css_status = _STATUS_CSS.get(status, "sr-status-pending")
-            lbl_status = _STATUS_LABEL.get(status, status)
-            with cols[j % 3]:
-                st.markdown(
-                    f'<div class="sr-route-card">'
-                    f'<span class="sr-route-card-id">{str(rid)[:18]}</span>'
-                    f'<div class="sr-route-card-info">'
-                    f'<span class="{css_status}">{lbl_status}</span>'
-                    f'<span>🚩 {visits} visitas</span>'
-                    f'{f"<span>📋 {ref}</span>" if ref else ""}'
-                    f'</div></div>',
-                    unsafe_allow_html=True,
-                )
-                checked = st.checkbox("Incluir", value=True, key=f"cfr_ruta_{rid}", label_visibility="collapsed")
-                if checked:
-                    seleccionadas_ids.append(rid)
+    with pill_cols[0]:
+        if st.button("Todas", key="cfr_pill_todas", use_container_width=True):
+            st.session_state.cfr_sel = {r["id"]: True for r in rutas}
+            st.session_state.pop("cfr_editor", None)
+            st.rerun()
 
+    for i, uuid in enumerate(plan_groups):
+        ids_plan = [r["id"] for r in plan_groups[uuid]]
+        all_sel = all(st.session_state.cfr_sel.get(rid, True) for rid in ids_plan)
+        pname = plan_names.get(uuid, uuid[:8]) if uuid != "sin-plan" else "Sin plan"
+        label = f"{'✓ ' if all_sel else ''}{pname}"
+        with pill_cols[i + 1]:
+            if st.button(label, key=f"cfr_pill_{i}", use_container_width=True):
+                new_val = not all_sel
+                for rid in ids_plan:
+                    st.session_state.cfr_sel[rid] = new_val
+                st.session_state.pop("cfr_editor", None)
+                st.rerun()
+
+    # --- Tabla con data_editor ---
+    STATUS_MAP = {"pending": "Pendiente", "started": "En curso", "finished": "Finalizada"}
+
+    rutas_sorted = sorted(rutas, key=lambda x: plan_names.get(x.get("plan", ""), "~"))
+    df = pd.DataFrame([
+        {
+            "☑": st.session_state.cfr_sel.get(r["id"], True),
+            "Plan": plan_names.get(r.get("plan", ""), "Sin plan"),
+            "ID de ruta": str(r["id"]),
+            "Estado": STATUS_MAP.get(r.get("status", ""), r.get("status", "")),
+            "Visitas": r.get("total_visits", 0),
+        }
+        for r in rutas_sorted
+    ])
+
+    edited_df = st.data_editor(
+        df,
+        column_config={
+            "☑": st.column_config.CheckboxColumn(width="small"),
+            "Plan": st.column_config.TextColumn(width="large"),
+            "ID de ruta": st.column_config.TextColumn(width="medium"),
+            "Estado": st.column_config.TextColumn(width="small"),
+            "Visitas": st.column_config.NumberColumn("Visitas", width="small"),
+        },
+        use_container_width=True,
+        hide_index=True,
+        disabled=["Plan", "ID de ruta", "Estado", "Visitas"],
+        key="cfr_editor",
+    )
+
+    seleccionadas_ids = [
+        rutas_sorted[i]["id"]
+        for i, sel in enumerate(edited_df["☑"])
+        if sel
+    ]
+
+    n_sel = len(seleccionadas_ids)
     if not seleccionadas_ids:
         render_tip("Selecciona al menos una ruta.")
         return
 
-    n_sel = len(seleccionadas_ids)
     st.markdown(
         render_stat(n_sel, f"ruta(s) seleccionada(s) de {len(rutas)}"),
         unsafe_allow_html=True,
