@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import unicodedata
 import io
+from datetime import date
 from utils import (
     render_header, render_guide, render_stat, render_label,
     render_tip, render_error_item,
@@ -286,6 +287,11 @@ def _seccion_actualizar_planeacion():
         render_tip("Todos los registros se subieron correctamente.")
 
 
+HAB_COL_A_HABILIDAD = 0
+HAB_COL_L_LATITUD = 11
+HAB_COL_M_LONGITUD = 12
+HAB_COL_S_CLIENTE = 18
+
 RUTEO_COL_D_HORA_INICIAL = 3
 RUTEO_COL_E_HORA_FINAL = 4
 RUTEO_COL_F_TIEMPO_SERVICIO = 5
@@ -444,6 +450,140 @@ def _seccion_generar_ruteo():
         _procesar_ruteo(df, archivo.name)
 
 
+def _seccion_actualizar_habilidades():
+    render_label("Agencia")
+    agencia = st.radio(
+        "Agencia",
+        ["Tláhuac", "Monterrey"],
+        horizontal=True,
+        key="afh_agencia",
+        label_visibility="collapsed",
+    )
+
+    render_label("Fecha del ruteo")
+    fecha_ruteo = st.date_input(
+        "Fecha del ruteo",
+        value=date.today(),
+        key="afh_fecha",
+        format="DD/MM/YYYY",
+        label_visibility="collapsed",
+    )
+
+    render_label("Archivo SimpliRoute Plan")
+    archivo = st.file_uploader(
+        "Sube el archivo SimpliRoute_Plan_...",
+        type=["xlsx", "xls"],
+        key="afh_archivo",
+        label_visibility="collapsed",
+    )
+
+    if not archivo:
+        render_tip(
+            "Formato esperado: <strong>SimpliRoute_Plan_YYYY-MM-DD.xlsx</strong>. "
+            "Columna <strong>S</strong> = Cliente (clave de match), "
+            "<strong>A</strong> = Habilidad, "
+            "<strong>L</strong> = Latitud, "
+            "<strong>M</strong> = Longitud."
+        )
+        return
+
+    loader = st.empty()
+    _render_loader(loader, "Leyendo archivo...", archivo.name)
+    try:
+        df = pd.read_excel(archivo, dtype=str, header=0).fillna("")
+    except Exception as e:
+        loader.empty()
+        st.error(f"Error al leer el archivo: {e}")
+        return
+    loader.empty()
+
+    registros = []
+    sin_cliente = 0
+    for _, row in df.iterrows():
+        if len(row) <= HAB_COL_S_CLIENTE:
+            sin_cliente += 1
+            continue
+        cliente = str(row.iloc[HAB_COL_S_CLIENTE]).strip()
+        if not cliente or cliente.lower() in ("nan", "none", ""):
+            sin_cliente += 1
+            continue
+        habilidad = str(row.iloc[HAB_COL_A_HABILIDAD]).strip() if len(row) > HAB_COL_A_HABILIDAD else ""
+        lat = _parse_coord(row.iloc[HAB_COL_L_LATITUD]) if len(row) > HAB_COL_L_LATITUD else None
+        lon = _parse_coord(row.iloc[HAB_COL_M_LONGITUD]) if len(row) > HAB_COL_M_LONGITUD else None
+        registros.append({"cliente": cliente, "habilidad": habilidad, "x": lat, "y": lon})
+
+    vistos = set()
+    unicos = []
+    for r in registros:
+        if r["cliente"] not in vistos:
+            vistos.add(r["cliente"])
+            unicos.append(r)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(render_stat(len(df), "Filas en archivo"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(len(unicos), "Clientes unicos"), unsafe_allow_html=True)
+    with col3:
+        st.markdown(
+            render_stat(sin_cliente, "Sin cliente (descartados)",
+                        style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);"),
+            unsafe_allow_html=True,
+        )
+
+    if not unicos:
+        render_tip("No se encontraron clientes validos en la columna S.", warning=True)
+        return
+
+    render_label("Vista previa")
+    st.dataframe(pd.DataFrame(unicos).head(20), use_container_width=True, hide_index=True)
+
+    if not st.button("Actualizar habilidades en Supabase", type="primary", use_container_width=True, key="afh_btn"):
+        return
+
+    supabase = _get_supabase_client()
+    total = len(unicos)
+    total_lotes = (total + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
+    barra, contador, contenedor_errores = create_progress_tracker(total, text="Actualizando en Supabase...")
+
+    procesados = 0
+    errores = 0
+    loader2 = st.empty()
+    for i in range(0, total, UPSERT_BATCH_SIZE):
+        lote_num = i // UPSERT_BATCH_SIZE + 1
+        lote = unicos[i:i + UPSERT_BATCH_SIZE]
+        _render_loader(loader2, f"Subiendo lote {lote_num} de {total_lotes}...", f"{len(lote)} registros")
+        try:
+            supabase.table("planeacion_nacional").upsert(lote, on_conflict="cliente").execute()
+        except Exception as e:
+            errores += len(lote)
+            with contenedor_errores:
+                render_error_item(f"Lote {lote_num}: {e}")
+        procesados += len(lote)
+        update_progress(barra, contador, procesados, total, text="Actualizando en Supabase...")
+
+    loader2.empty()
+    finish_progress(barra)
+
+    exitosos = total - errores
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(render_stat(exitosos, "Actualizados OK"), unsafe_allow_html=True)
+    if errores:
+        with col2:
+            st.markdown(
+                render_stat(errores, "Con error",
+                            style="background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);"),
+                unsafe_allow_html=True,
+            )
+        render_tip(f"Hubo {errores} registros con error. Revisa los mensajes arriba.", warning=True)
+    else:
+        render_tip(
+            f"Todos los registros se actualizaron correctamente — "
+            f"<strong>{agencia}</strong> · {fecha_ruteo.strftime('%d/%m/%Y')}."
+        )
+
+
 def pagina_asignacion_fija_uni():
     render_header("Asignacion Fija Uni", "Planeacion nacional de visitas Unilever")
     render_guide(
@@ -458,8 +598,10 @@ def pagina_asignacion_fija_uni():
         "El campo <strong>habilidad</strong> se cargara desde otro archivo en un paso posterior.",
     )
 
-    tab1, tab2 = st.tabs(["Actualizar planeacion nacional", "Generar archivo de ruteo"])
+    tab1, tab2, tab3 = st.tabs(["Actualizar planeacion nacional", "Generar archivo de ruteo", "Actualizar Habilidades"])
     with tab1:
         _seccion_actualizar_planeacion()
     with tab2:
         _seccion_generar_ruteo()
+    with tab3:
+        _seccion_actualizar_habilidades()
