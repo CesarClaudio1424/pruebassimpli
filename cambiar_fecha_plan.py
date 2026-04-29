@@ -72,6 +72,26 @@ def actualizar_ruta_fecha(token, route_id, nueva_fecha):
 
 # ── Rutas API ─────────────────────────────────────────────────────────────────
 
+def fetch_vehicles_map(token, planned_date):
+    """Devuelve {route_uuid: {vehicle, driver}} usando el endpoint de vehiculos por fecha."""
+    url = f"{API_BASE}/plans/{planned_date}/vehicles/"
+    try:
+        r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
+        if r.status_code == 200:
+            result = {}
+            for v in r.json() or []:
+                vname = v.get("name", "—")
+                dname = (v.get("driver") or {}).get("name", "—")
+                for route in v.get("routes", []):
+                    rid = route.get("id")
+                    if rid:
+                        result[rid] = {"vehicle": vname, "driver": dname}
+            return result
+    except Exception:
+        pass
+    return {}
+
+
 def listar_rutas(token, planned_date):
     rutas = []
     url = f"{API_BASE}/routes/routes/?planned_date={planned_date}"
@@ -362,7 +382,7 @@ def _seccion_rutas():
     fecha_origen = st.date_input("Fecha origen", value=date.today(), format="DD/MM/YYYY", key="cfr_fecha_origen")
 
     if st.button("Buscar rutas", key="cfr_buscar"):
-        for k in ("cfr_rutas", "cfr_plan_names", "cfr_sel", "cfr_editor"):
+        for k in ("cfr_rutas", "cfr_plan_names", "cfr_vehicles_map", "cfr_sel", "cfr_editor"):
             st.session_state.pop(k, None)
         with st.spinner("Consultando rutas..."):
             rutas, status, err = listar_rutas(token, fecha_origen.strftime("%Y-%m-%d"))
@@ -416,6 +436,12 @@ def _seccion_rutas():
             rid = rutas_sorted_tmp[int(row_idx_str)]["id"]
             st.session_state.cfr_sel[rid] = changes["☑"]
 
+    # --- Vehiculos y conductores por ruta ---
+    if "cfr_vehicles_map" not in st.session_state:
+        with st.spinner("Cargando vehiculos y conductores..."):
+            st.session_state.cfr_vehicles_map = fetch_vehicles_map(token, fecha_origen.strftime("%Y-%m-%d"))
+    vehicles_map = st.session_state.cfr_vehicles_map
+
     # --- Pills de filtro por plan ---
     render_label("Paso 3 · Selecciona las rutas a actualizar")
 
@@ -423,43 +449,48 @@ def _seccion_rutas():
     for r in rutas:
         plan_groups[r.get("plan", "sin-plan")].append(r)
 
-    # Pesos proporcionales al largo del label para que los botones no queden iguales
-    plan_labels = []
-    for uuid in plan_groups:
-        pname = plan_names.get(uuid, uuid[:8]) if uuid != "sin-plan" else "Sin plan"
-        plan_labels.append((uuid, pname))
+    plan_labels = [
+        (uuid, plan_names.get(uuid, uuid[:8]) if uuid != "sin-plan" else "Sin plan")
+        for uuid in plan_groups
+    ]
 
-    weights = [max(len("Todas"), 5)] + [max(len(lbl), 5) for _, lbl in plan_labels]
-    pill_cols = st.columns(weights)
+    # "Todas" en columna izquierda; plan buttons en grid de 2 columnas a la derecha
+    col_todas, col_planes = st.columns([1, 3])
 
-    with pill_cols[0]:
+    with col_todas:
         if st.button("Todas", key="cfr_pill_todas", use_container_width=True):
             st.session_state.cfr_sel = {r["id"]: True for r in rutas}
             st.session_state.pop("cfr_editor", None)
             st.rerun()
 
-    for i, (uuid, pname) in enumerate(plan_labels):
-        ids_plan = [r["id"] for r in plan_groups[uuid]]
-        all_sel = all(st.session_state.cfr_sel.get(rid, True) for rid in ids_plan)
-        label = f"{'✓ ' if all_sel else ''}{pname}"
-        with pill_cols[i + 1]:
-            if st.button(label, key=f"cfr_pill_{i}", use_container_width=True):
-                new_val = not all_sel
-                for rid in ids_plan:
-                    st.session_state.cfr_sel[rid] = new_val
-                st.session_state.pop("cfr_editor", None)
-                st.rerun()
+    with col_planes:
+        for row_start in range(0, len(plan_labels), 2):
+            grid_cols = st.columns(2)
+            for col_i in range(2):
+                idx = row_start + col_i
+                if idx >= len(plan_labels):
+                    break
+                uuid, pname = plan_labels[idx]
+                ids_plan = [r["id"] for r in plan_groups[uuid]]
+                all_sel = all(st.session_state.cfr_sel.get(rid, True) for rid in ids_plan)
+                label = f"{'✓ ' if all_sel else ''}{pname}"
+                with grid_cols[col_i]:
+                    if st.button(label, key=f"cfr_pill_{idx}", use_container_width=True):
+                        new_val = not all_sel
+                        for rid in ids_plan:
+                            st.session_state.cfr_sel[rid] = new_val
+                        st.session_state.pop("cfr_editor", None)
+                        st.rerun()
 
     # --- Tabla con data_editor ---
-    STATUS_MAP = {"pending": "Pendiente", "started": "En curso", "finished": "Finalizada"}
-
     rutas_sorted = sorted(rutas, key=lambda x: plan_names.get(x.get("plan", ""), "~"))
     df = pd.DataFrame([
         {
             "☑": st.session_state.cfr_sel.get(r["id"], True),
             "Plan": plan_names.get(r.get("plan", ""), "Sin plan"),
             "ID de ruta": str(r["id"])[:8] + "…",
-            "Estado": STATUS_MAP.get(r.get("status", ""), r.get("status", "")),
+            "Vehículo": vehicles_map.get(r["id"], {}).get("vehicle", "—"),
+            "Conductor": vehicles_map.get(r["id"], {}).get("driver", "—"),
             "Visitas": r.get("total_visits", 0),
         }
         for r in rutas_sorted
@@ -471,12 +502,13 @@ def _seccion_rutas():
             "☑": st.column_config.CheckboxColumn(width="small"),
             "Plan": st.column_config.TextColumn(width="medium"),
             "ID de ruta": st.column_config.TextColumn(width="small"),
-            "Estado": st.column_config.TextColumn(width="small"),
+            "Vehículo": st.column_config.TextColumn(width="medium"),
+            "Conductor": st.column_config.TextColumn(width="medium"),
             "Visitas": st.column_config.NumberColumn("Visitas", width="small"),
         },
         use_container_width=True,
         hide_index=True,
-        disabled=["Plan", "ID de ruta", "Estado", "Visitas"],
+        disabled=["Plan", "ID de ruta", "Vehículo", "Conductor", "Visitas"],
         key="cfr_editor",
     )
 
