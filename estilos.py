@@ -343,5 +343,75 @@ def generar_css(THEME, dark):
     .stAlert p {{
         color: {"#e0e0e0" if dark else "#31333f"} !important;
     }}
+
+    /* Plan cards */
+    .sr-plan-card {{
+        border: 2px solid {THEME["input_border"]};
+        background: {THEME["input_bg"]};
+        border-radius: 0.6rem;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.4rem;
+        transition: border-color 0.15s, background 0.15s;
+    }}
+    .sr-plan-card.sr-plan-selected {{
+        border-color: #2A2BA1;
+        background: {"rgba(42,43,161,0.13)" if dark else "rgba(42,43,161,0.07)"};
+    }}
+    .sr-plan-card-name {{
+        font-weight: 700;
+        font-size: 0.92rem;
+        color: {THEME["text"]};
+        display: block;
+        margin-bottom: 0.25rem;
+    }}
+    .sr-plan-card-meta {{
+        font-size: 0.76rem;
+        color: {"#aaa" if dark else "#777"};
+    }}
+    .sr-plan-card-routes {{
+        font-size: 0.76rem;
+        font-weight: 600;
+        color: #369CFF;
+        margin-top: 0.2rem;
+    }}
+
+    /* Route group */
+    .sr-route-group-header {{
+        background: {"#1a1e2a" if dark else "#eef0ff"};
+        border-left: 4px solid #2A2BA1;
+        padding: 0.45rem 0.8rem;
+        border-radius: 0 0.4rem 0.4rem 0;
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: {THEME["label"]};
+        margin: 0.8rem 0 0.5rem 0;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+    }}
+    .sr-route-card {{
+        border: 1.5px solid {THEME["input_border"]};
+        background: {THEME["input_bg"]};
+        border-radius: 0.5rem;
+        padding: 0.55rem 0.75rem;
+        margin-bottom: 0.35rem;
+    }}
+    .sr-route-card-id {{
+        font-size: 0.68rem;
+        color: {"#666" if dark else "#aaa"};
+        font-family: monospace;
+        display: block;
+        margin-bottom: 0.2rem;
+    }}
+    .sr-route-card-info {{
+        font-size: 0.78rem;
+        color: {THEME["text"]};
+        display: flex;
+        gap: 0.6rem;
+        align-items: center;
+        flex-wrap: wrap;
+    }}
+    .sr-status-pending  {{ color: #369CFF; font-weight: 600; font-size: 0.72rem; }}
+    .sr-status-started  {{ color: #FF9F43; font-weight: 600; font-size: 0.72rem; }}
+    .sr-status-finished {{ color: #29AB55; font-weight: 600; font-size: 0.72rem; }}
     </style>
     """

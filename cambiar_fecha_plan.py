@@ -1,5 +1,6 @@
 import json
 import time
+from collections import defaultdict
 import streamlit as st
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -194,6 +195,7 @@ def _seccion_plan():
     if st.button("Buscar planes", key="cfp_buscar"):
         st.session_state.pop("cfp_planes", None)
         st.session_state.pop("cfp_resultado_put", None)
+        st.session_state.cfp_plan_idx = 0
         with st.spinner("Consultando planes..."):
             planes, status, err, url = listar_planes(token, inicio.strftime("%Y-%m-%d"), fin.strftime("%Y-%m-%d"))
         if status != 200:
@@ -213,12 +215,37 @@ def _seccion_plan():
         return
 
     render_label("Paso 3 · Selecciona el plan a editar")
-    opciones = {
-        f"{p.get('name', '(sin nombre)')} · {p.get('start_date', '?')} → {p.get('end_date', '?')} · {p.get('id')}": p
-        for p in planes
-    }
-    etiqueta = st.selectbox("Plan", list(opciones.keys()), label_visibility="collapsed", key="cfp_plan_sel")
-    plan_sel = opciones[etiqueta]
+
+    if "cfp_plan_idx" not in st.session_state:
+        st.session_state.cfp_plan_idx = 0
+
+    cols_per_row = 2
+    for row_start in range(0, len(planes), cols_per_row):
+        cols = st.columns(cols_per_row)
+        for col_offset in range(cols_per_row):
+            p_i = row_start + col_offset
+            if p_i >= len(planes):
+                break
+            p = planes[p_i]
+            is_sel = st.session_state.cfp_plan_idx == p_i
+            n_rutas = len(p.get("routes", []))
+            with cols[col_offset]:
+                css_class = "sr-plan-card sr-plan-selected" if is_sel else "sr-plan-card"
+                st.markdown(
+                    f'<div class="{css_class}">'
+                    f'<span class="sr-plan-card-name">{p.get("name", "(sin nombre)")}</span>'
+                    f'<span class="sr-plan-card-meta">📅 {p.get("start_date", "?")} → {p.get("end_date", "?")}</span>'
+                    f'<div class="sr-plan-card-routes">🚛 {n_rutas} ruta(s)</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                btn_label = "✓ Seleccionado" if is_sel else "Seleccionar"
+                btn_type = "primary" if is_sel else "secondary"
+                if st.button(btn_label, key=f"cfp_card_{p_i}", use_container_width=True, type=btn_type):
+                    st.session_state.cfp_plan_idx = p_i
+                    st.rerun()
+
+    plan_sel = planes[st.session_state.cfp_plan_idx]
 
     with st.expander("Ver JSON del plan seleccionado", expanded=False):
         st.json(plan_sel)
@@ -353,21 +380,55 @@ def _seccion_rutas():
         return
 
     render_label("Paso 3 · Selecciona las rutas a actualizar")
-    opciones_rutas = {
-        f"{r.get('name', r.get('title', '?'))} (id: {r.get('id')})": r.get("id")
-        for r in rutas
-    }
-    seleccionadas = st.multiselect(
-        "Rutas",
-        list(opciones_rutas.keys()),
-        default=list(opciones_rutas.keys()),
-        label_visibility="collapsed",
-        key="cfr_seleccion",
-    )
 
-    if not seleccionadas:
+    # Agrupar por plan UUID
+    grupos = defaultdict(list)
+    for r in rutas:
+        grupos[r.get("plan", "sin-plan")].append(r)
+
+    _STATUS_CSS = {"pending": "sr-status-pending", "started": "sr-status-started", "finished": "sr-status-finished"}
+    _STATUS_LABEL = {"pending": "Pendiente", "started": "En curso", "finished": "Finalizada"}
+
+    seleccionadas_ids = []
+    for g_i, (plan_uuid, group_rutas) in enumerate(grupos.items()):
+        uuid_short = plan_uuid[:8] if plan_uuid != "sin-plan" else "sin plan"
+        st.markdown(
+            f'<div class="sr-route-group-header">Grupo {g_i + 1} &nbsp;·&nbsp; plan {uuid_short}…  ({len(group_rutas)} ruta(s))</div>',
+            unsafe_allow_html=True,
+        )
+        cols = st.columns(3)
+        for j, r in enumerate(group_rutas):
+            rid = r.get("id", "")
+            status = r.get("status", "pending")
+            visits = r.get("total_visits", "?")
+            ref = r.get("reference") or ""
+            display_id = ref if ref else (str(rid)[:8] + "…")
+            css_status = _STATUS_CSS.get(status, "sr-status-pending")
+            lbl_status = _STATUS_LABEL.get(status, status)
+            with cols[j % 3]:
+                st.markdown(
+                    f'<div class="sr-route-card">'
+                    f'<span class="sr-route-card-id">{str(rid)[:18]}</span>'
+                    f'<div class="sr-route-card-info">'
+                    f'<span class="{css_status}">{lbl_status}</span>'
+                    f'<span>🚩 {visits} visitas</span>'
+                    f'{f"<span>📋 {ref}</span>" if ref else ""}'
+                    f'</div></div>',
+                    unsafe_allow_html=True,
+                )
+                checked = st.checkbox("Incluir", value=True, key=f"cfr_ruta_{rid}", label_visibility="collapsed")
+                if checked:
+                    seleccionadas_ids.append(rid)
+
+    if not seleccionadas_ids:
         render_tip("Selecciona al menos una ruta.")
         return
+
+    n_sel = len(seleccionadas_ids)
+    st.markdown(
+        render_stat(n_sel, f"ruta(s) seleccionada(s) de {len(rutas)}"),
+        unsafe_allow_html=True,
+    )
 
     render_label("Paso 4 · Nueva fecha")
     nueva_fecha = st.date_input("Nueva fecha", value=fecha_origen, format="DD/MM/YYYY", key="cfr_nueva_fecha")
@@ -382,7 +443,7 @@ def _seccion_rutas():
     if not st.button("Actualizar rutas", type="primary", key="cfr_actualizar"):
         return
 
-    route_ids = [opciones_rutas[s] for s in seleccionadas]
+    route_ids = seleccionadas_ids
     nueva_fecha_str = nueva_fecha.strftime("%Y-%m-%d")
     total = len(route_ids)
 
