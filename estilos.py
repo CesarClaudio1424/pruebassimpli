@@ -93,6 +93,15 @@ def generar_css(THEME, dark):
         margin-bottom: 0.3rem;
     }}
 
+    /* Botones secundarios: texto completo sin cortar */
+    button[data-testid="stBaseButton-secondary"] {{
+        white-space: normal !important;
+        height: auto !important;
+        min-height: 2.4rem !important;
+        line-height: 1.3 !important;
+        padding: 0.4rem 0.8rem !important;
+    }}
+
     /* Solo boton primario con gradiente */
     button[data-testid="stBaseButton-primary"] {{
         background: linear-gradient(135deg, #2A2BA1 0%, #1a1b6b 100%) !important;

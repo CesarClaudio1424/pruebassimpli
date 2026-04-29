@@ -500,7 +500,7 @@ def _seccion_rutas():
         df,
         column_config={
             "☑": st.column_config.CheckboxColumn(width="small"),
-            "Plan": st.column_config.TextColumn(width="medium"),
+            "Plan": st.column_config.TextColumn(width="large"),
             "ID de ruta": st.column_config.TextColumn(width="small"),
             "Vehículo": st.column_config.TextColumn(width="medium"),
             "Conductor": st.column_config.TextColumn(width="medium"),
