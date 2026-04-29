@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from config import API_BASE, REQUEST_TIMEOUT, EDIT_TIMEOUT, MAX_BLOCK_SIZE, MAX_RETRIES, RETRY_BASE_DELAY
 from utils import (
     render_header, render_guide, render_label, render_stat,
-    render_tip, render_error_item,
+    render_tip, render_error_item, render_cuenta_badge,
 )
 
 ROUTE_WORKERS = 10
@@ -16,6 +16,16 @@ PAGINATED_PAGE_SIZE = 500
 
 def _headers(token):
     return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
+
+
+def _validar_cuenta(token):
+    try:
+        r = requests.get(f"{API_BASE}/accounts/me/", headers=_headers(token), timeout=REQUEST_TIMEOUT)
+        if r.status_code == 200:
+            return True, r.json().get("account", {}).get("name", "Sin nombre")
+    except requests.exceptions.RequestException:
+        pass
+    return False, None
 
 
 # ── Plan API ──────────────────────────────────────────────────────────────────
@@ -164,6 +174,12 @@ def _seccion_plan():
         return
     token = token.strip()
 
+    valido, cuenta = _validar_cuenta(token)
+    if not valido:
+        st.error("Token invalido. Revisa tu token de API.")
+        return
+    render_cuenta_badge(f"✓ Conectado a: <strong>{cuenta}</strong>")
+
     render_label("Paso 2 · Rango de busqueda")
     col1, col2 = st.columns(2)
     with col1:
@@ -308,6 +324,12 @@ def _seccion_rutas():
         return
     token = token.strip()
 
+    valido, cuenta = _validar_cuenta(token)
+    if not valido:
+        st.error("Token invalido. Revisa tu token de API.")
+        return
+    render_cuenta_badge(f"✓ Conectado a: <strong>{cuenta}</strong>")
+
     render_label("Paso 2 · Fecha origen")
     fecha_origen = st.date_input("Fecha origen", value=date.today(), format="DD/MM/YYYY", key="cfr_fecha_origen")
 
@@ -413,6 +435,12 @@ def _seccion_visitas():
         render_tip("Ingresa el token de API de la cuenta.")
         return
     token = token.strip()
+
+    valido, cuenta = _validar_cuenta(token)
+    if not valido:
+        st.error("Token invalido. Revisa tu token de API.")
+        return
+    render_cuenta_badge(f"✓ Conectado a: <strong>{cuenta}</strong>")
 
     render_label("Paso 2 · Fecha origen")
     fecha_origen = st.date_input("Fecha origen", value=date.today(), format="DD/MM/YYYY", key="cfv_fecha_origen")
