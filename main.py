@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from estilos import generar_tema, generar_css
 from edicion import pagina_edicion
 from pagina_webhooks import pagina_webhooks
@@ -32,6 +33,25 @@ THEME = generar_tema(dark)
 
 # --- Estilos ---
 st.markdown(generar_css(THEME, dark), unsafe_allow_html=True)
+
+# --- Autoscroll global ---
+components.html("""
+<script>
+(function() {
+    try {
+        var main = window.parent.document.querySelector('section.main');
+        if (!main) return;
+        var lastH = main.scrollHeight;
+        new MutationObserver(function() {
+            if (main.scrollHeight > lastH + 50) {
+                lastH = main.scrollHeight;
+                main.scrollTo({ top: main.scrollHeight, behavior: 'smooth' });
+            }
+        }).observe(main, { childList: true, subtree: true });
+    } catch(e) {}
+})();
+</script>
+""", height=0)
 
 # --- Sidebar ---
 with st.sidebar:
