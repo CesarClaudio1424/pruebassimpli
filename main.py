@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 from estilos import generar_tema, generar_css
 from edicion import pagina_edicion
 from pagina_webhooks import pagina_webhooks
@@ -35,23 +34,22 @@ THEME = generar_tema(dark)
 st.markdown(generar_css(THEME, dark), unsafe_allow_html=True)
 
 # --- Autoscroll global ---
-components.html("""
-<script>
-(function() {
-    try {
-        var main = window.parent.document.querySelector('section.main');
-        if (!main) return;
-        var lastH = main.scrollHeight;
-        new MutationObserver(function() {
-            if (main.scrollHeight > lastH + 50) {
-                lastH = main.scrollHeight;
-                main.scrollTo({ top: main.scrollHeight, behavior: 'smooth' });
-            }
-        }).observe(main, { childList: true, subtree: true });
-    } catch(e) {}
-})();
-</script>
-""", height=0)
+# Ejecuta JS en el contexto principal via onerror (st.markdown ejecuta handlers
+# de eventos aunque React bloquea <script>). Selector .stMain confirmado en
+# Streamlit 1.45 (className="stMain", overflow:auto).
+st.markdown("""
+<img src="x" onerror="
+  this.remove();
+  if(window._srObs){window._srObs.disconnect();}
+  var m=document.querySelector('.stMain')||document.body;
+  var h=m.scrollHeight,t;
+  window._srObs=new MutationObserver(function(){
+    var nh=m.scrollHeight;
+    if(nh>h+30){h=nh;clearTimeout(t);t=setTimeout(function(){m.scrollTo({top:m.scrollHeight,behavior:'smooth'});},60);}
+  });
+  window._srObs.observe(m,{childList:true,subtree:true});
+" style="display:none">
+""", unsafe_allow_html=True)
 
 # --- Sidebar ---
 with st.sidebar:
