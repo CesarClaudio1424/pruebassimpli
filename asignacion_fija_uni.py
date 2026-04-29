@@ -142,7 +142,6 @@ def _extraer_registros(df):
             "y": y,
         })
 
-    # Dedupe por cliente (primero gana)
     vistos = set()
     unicos = []
     duplicados = 0
@@ -178,6 +177,23 @@ def _upsert_lote(supabase, registros):
     return supabase.table("planeacion_nacional").upsert(
         registros, on_conflict="cliente"
     ).execute()
+
+
+def _rotar_habilidades(existentes, nueva):
+    """
+    Pone `nueva` en posicion 1 y recorre las demas sin duplicados.
+    existentes: lista de 4 valores (pueden ser None/vacios).
+    Retorna: lista de exactamente 4 valores.
+    """
+    limpia = [
+        h for h in existentes
+        if h and str(h).strip() not in ("", "None", "null", "nan")
+    ]
+    limpia = [h for h in limpia if h != nueva]  # quitar si ya existe
+    rotada = ([nueva] + limpia)[:4]
+    while len(rotada) < 4:
+        rotada.append(None)
+    return rotada
 
 
 def _seccion_actualizar_planeacion():
@@ -309,7 +325,8 @@ def _fetch_planeacion(supabase, clientes):
         lote = clientes[i:i + 500]
         try:
             resp = supabase.table("planeacion_nacional").select(
-                "cliente,hora_inicio,hora_final,duracion,x,y"
+                "cliente,hora_inicio,hora_final,duracion,x,y,"
+                "habilidad_1,habilidad_2,habilidad_3,habilidad_4"
             ).in_("cliente", lote).execute()
             for row in resp.data or []:
                 datos[row["cliente"]] = row
@@ -319,7 +336,7 @@ def _fetch_planeacion(supabase, clientes):
     return datos
 
 
-def _procesar_ruteo(df, nombre_original):
+def _procesar_ruteo(df, nombre_original, habilidades_disponibles):
     loader = st.empty()
     supabase = _get_supabase_client()
 
@@ -346,7 +363,14 @@ def _procesar_ruteo(df, nombre_original):
                 df.iat[idx, RUTEO_COL_H_LATITUD] = data["x"]
             if data.get("y") is not None:
                 df.iat[idx, RUTEO_COL_I_LONGITUD] = data["y"]
-            df.iat[idx, RUTEO_COL_K_HABILIDADES] = ""
+            # Asignar habilidad por prioridad (1 → 2 → 3 → 4)
+            hab_asignada = "Fuera"
+            for n in range(1, 5):
+                h = (data.get(f"habilidad_{n}") or "").strip()
+                if h and h in habilidades_disponibles:
+                    hab_asignada = h
+                    break
+            df.iat[idx, RUTEO_COL_K_HABILIDADES] = hab_asignada
         else:
             unmatched += 1
             df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = "07:00"
@@ -359,7 +383,6 @@ def _procesar_ruteo(df, nombre_original):
 
     _render_loader(loader, "Generando archivo...", "Escribiendo xlsx")
 
-    # Convertir columnas a numero: C(2), F(5), G(6), H(7), I(8), N(13)
     for col_idx in [2, 5, 6, 7, 8, 13]:
         if col_idx < df.shape[1]:
             df.iloc[:, col_idx] = pd.to_numeric(df.iloc[:, col_idx], errors="coerce")
@@ -371,7 +394,6 @@ def _procesar_ruteo(df, nombre_original):
 
         ws = writer.sheets["Ruteo"]
 
-        # Quitar contorno y fondo a headers
         no_border = Border()
         sin_fondo = PatternFill(fill_type=None)
         for cell in ws[1]:
@@ -379,7 +401,6 @@ def _procesar_ruteo(df, nombre_original):
             cell.fill = sin_fondo
             cell.font = Font(bold=False)
 
-        # Formato numerico por columna (openpyxl es 1-indexed)
         formatos = {
             3: "0",        # C
             6: "0",        # F
@@ -415,11 +436,60 @@ def _procesar_ruteo(df, nombre_original):
 
 
 def _seccion_generar_ruteo():
+    render_label("Agencia")
+    agencia = st.radio(
+        "Agencia",
+        ["Tláhuac", "Monterrey"],
+        horizontal=True,
+        key="agr_agencia",
+        label_visibility="collapsed",
+    )
+
+    habilidades_disponibles = set()
+
+    if agencia == "Tláhuac":
+        render_label("Vehículos disponibles")
+        vehiculos_txt = st.text_area(
+            "Vehiculos",
+            placeholder="Un vehículo por línea\nEj: Camion-01\nCamion-02",
+            key="agr_vehiculos",
+            label_visibility="collapsed",
+            height=120,
+        )
+        habilidades_disponibles = {v.strip() for v in vehiculos_txt.splitlines() if v.strip()}
+    else:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            render_label("Cuántas rutas")
+            n_rutas = st.number_input(
+                "Rutas",
+                min_value=1,
+                max_value=99,
+                value=5,
+                key="agr_n_rutas",
+                label_visibility="collapsed",
+            )
+        with col_b:
+            render_label("Cuentas especiales")
+            especiales_txt = st.text_area(
+                "Especiales",
+                placeholder="Una por línea",
+                key="agr_especiales",
+                label_visibility="collapsed",
+                height=80,
+            )
+        rutas = [str(i) for i in range(1, int(n_rutas) + 1)]
+        especiales = [e.strip() for e in especiales_txt.splitlines() if e.strip()]
+        habilidades_disponibles = set(rutas + especiales)
+
+    st.markdown("---")
+
     render_label("Archivo Excel de ruteo")
     archivo = st.file_uploader(
         "Sube el archivo de ruteo a actualizar",
         type=["xlsx", "xls"],
         key="afu_ruteo_archivo",
+        label_visibility="collapsed",
     )
 
     if not archivo:
@@ -428,7 +498,7 @@ def _seccion_generar_ruteo():
             "<strong>F</strong> Tiempo Servicio, <strong>H</strong> Latitud, <strong>I</strong> Longitud, "
             "<strong>K</strong> Habilidades requeridas. Se vacian <strong>Q</strong> y <strong>R</strong>. "
             "Match por columna <strong>G</strong> (Nota) vs <strong>cliente</strong> de Supabase. "
-            "Sin match: horarios por defecto, habilidad = <strong>Fuera</strong>, H/I sin tocar."
+            "Sin match o sin habilidad disponible: habilidad = <strong>Fuera</strong>."
         )
         return
 
@@ -442,12 +512,20 @@ def _seccion_generar_ruteo():
         return
     loader.empty()
 
+    if habilidades_disponibles:
+        render_tip(
+            f"<strong>{len(habilidades_disponibles)}</strong> habilidades configuradas: "
+            + ", ".join(f"<code>{h}</code>" for h in sorted(habilidades_disponibles))
+        )
+    else:
+        render_tip("No hay vehículos/rutas configurados. Todos los clientes quedarán como <strong>Fuera</strong>.", warning=True)
+
     st.markdown(render_stat(len(df), "Filas en archivo"), unsafe_allow_html=True)
     render_label("Vista previa (primeras 10 filas)")
     st.dataframe(df.head(10), use_container_width=True)
 
     if st.button("Procesar y generar archivo", type="primary", use_container_width=True):
-        _procesar_ruteo(df, archivo.name)
+        _procesar_ruteo(df, archivo.name, habilidades_disponibles)
 
 
 def _seccion_actualizar_habilidades():
@@ -483,7 +561,8 @@ def _seccion_actualizar_habilidades():
             "Columna <strong>S</strong> = Cliente (clave de match), "
             "<strong>A</strong> = Habilidad, "
             "<strong>L</strong> = Latitud, "
-            "<strong>M</strong> = Longitud."
+            "<strong>M</strong> = Longitud. "
+            "La habilidad se coloca en <strong>habilidad_1</strong> y se recorren las existentes."
         )
         return
 
@@ -542,17 +621,58 @@ def _seccion_actualizar_habilidades():
         return
 
     supabase = _get_supabase_client()
-    total = len(unicos)
+
+    # Leer habilidades actuales de Supabase para aplicar rotacion
+    loader2 = st.empty()
+    _render_loader(loader2, "Consultando habilidades actuales...", f"{len(unicos):,} clientes")
+    clientes = [r["cliente"] for r in unicos]
+    existentes_map = {}
+    for i in range(0, len(clientes), 500):
+        lote = clientes[i:i + 500]
+        try:
+            resp = supabase.table("planeacion_nacional").select(
+                "cliente,habilidad_1,habilidad_2,habilidad_3,habilidad_4"
+            ).in_("cliente", lote).execute()
+            for row in resp.data or []:
+                existentes_map[row["cliente"]] = row
+        except Exception as e:
+            st.warning(f"No se pudieron consultar habilidades existentes: {e}")
+    loader2.empty()
+
+    # Construir payload con rotacion
+    payload = []
+    for r in unicos:
+        cliente = r["cliente"]
+        nueva_hab = r["habilidad"]
+        existente = existentes_map.get(cliente, {})
+        actuales = [
+            existente.get("habilidad_1"),
+            existente.get("habilidad_2"),
+            existente.get("habilidad_3"),
+            existente.get("habilidad_4"),
+        ]
+        rotada = _rotar_habilidades(actuales, nueva_hab)
+        payload.append({
+            "cliente": cliente,
+            "x": r["x"],
+            "y": r["y"],
+            "habilidad_1": rotada[0],
+            "habilidad_2": rotada[1],
+            "habilidad_3": rotada[2],
+            "habilidad_4": rotada[3],
+        })
+
+    total = len(payload)
     total_lotes = (total + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
     barra, contador, contenedor_errores = create_progress_tracker(total, text="Actualizando en Supabase...")
 
     procesados = 0
     errores = 0
-    loader2 = st.empty()
+    loader3 = st.empty()
     for i in range(0, total, UPSERT_BATCH_SIZE):
         lote_num = i // UPSERT_BATCH_SIZE + 1
-        lote = unicos[i:i + UPSERT_BATCH_SIZE]
-        _render_loader(loader2, f"Subiendo lote {lote_num} de {total_lotes}...", f"{len(lote)} registros")
+        lote = payload[i:i + UPSERT_BATCH_SIZE]
+        _render_loader(loader3, f"Subiendo lote {lote_num} de {total_lotes}...", f"{len(lote)} registros")
         try:
             supabase.table("planeacion_nacional").upsert(lote, on_conflict="cliente").execute()
         except Exception as e:
@@ -562,7 +682,7 @@ def _seccion_actualizar_habilidades():
         procesados += len(lote)
         update_progress(barra, contador, procesados, total, text="Actualizando en Supabase...")
 
-    loader2.empty()
+    loader3.empty()
     finish_progress(barra)
 
     exitosos = total - errores
