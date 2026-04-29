@@ -433,7 +433,7 @@ def _seccion_rutas():
 
     # --- Inicializar / sincronizar seleccion ---
     if "cfr_sel" not in st.session_state:
-        st.session_state.cfr_sel = {r["id"]: True for r in rutas}
+        st.session_state.cfr_sel = {r["id"]: False for r in rutas}
 
     # Sincronizar ediciones manuales del data_editor al session_state
     editor_state = st.session_state.get("cfr_editor", {})
@@ -464,9 +464,13 @@ def _seccion_rutas():
     # "Todas" en columna izquierda; plan buttons en grid de 2 columnas a la derecha
     col_todas, col_planes = st.columns([1, 3])
 
+    all_selected = all(st.session_state.cfr_sel.get(r["id"], False) for r in rutas)
     with col_todas:
-        if st.button("Todas", key="cfr_pill_todas", use_container_width=True):
-            st.session_state.cfr_sel = {r["id"]: True for r in rutas}
+        todas_label = "✓ Todas" if all_selected else "Todas"
+        todas_type = "primary" if all_selected else "secondary"
+        if st.button(todas_label, key="cfr_pill_todas", use_container_width=True, type=todas_type):
+            new_val = not all_selected
+            st.session_state.cfr_sel = {r["id"]: new_val for r in rutas}
             st.session_state.pop("cfr_editor", None)
             st.rerun()
 
