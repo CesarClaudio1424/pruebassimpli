@@ -460,9 +460,9 @@ def _seccion_actualizar_habilidades():
         label_visibility="collapsed",
     )
 
-    render_label("Fecha del ruteo")
+    render_label("Fecha de entrega del ruteo")
     fecha_ruteo = st.date_input(
-        "Fecha del ruteo",
+        "Fecha de entrega del ruteo",
         value=date.today(),
         key="afh_fecha",
         format="DD/MM/YYYY",
