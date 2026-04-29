@@ -3,13 +3,16 @@ import requests
 import pandas as pd
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
-from config import API_BASE, REQUEST_TIMEOUT, EDIT_TIMEOUT, EDIT_DELAY, MAX_BLOCK_SIZE, MAX_RETRIES, RETRY_BASE_DELAY
+from config import API_BASE, REQUEST_TIMEOUT, EDIT_TIMEOUT, MAX_BLOCK_SIZE, MAX_RETRIES, RETRY_BASE_DELAY
 from utils import (
     render_header, render_guide, render_label, render_stat,
     render_cuenta_badge, render_tip,
     create_progress_tracker, update_progress, finish_progress,
 )
+
+CLEANUP_WORKERS = 10
 
 
 def _headers(token):
@@ -426,42 +429,39 @@ def _df_visitas(visitas):
 
 def _ejecutar_borrado(a_borrar, token, cuenta, fecha_str, descripcion):
     st.markdown("---")
-    st.markdown("### 🗑️ Procesando...")
+    st.markdown(f"### 🗑️ Procesando... ({CLEANUP_WORKERS} en paralelo)")
 
     bloques = [a_borrar[i : i + MAX_BLOCK_SIZE] for i in range(0, len(a_borrar), MAX_BLOCK_SIZE)]
     barra, contador, cont_bloques = create_progress_tracker(len(bloques), "Eliminando...")
     eliminadas = 0
     errores = []
-    retry_msg = st.empty()
-    retry_state = {"idx": 0, "total": len(bloques)}
+    completados = 0
 
-    def _on_retry(attempt, max_r, wait, err):
-        short = (err or "")[:80]
-        retry_msg.warning(
-            f"Bloque {retry_state['idx'] + 1}/{retry_state['total']}: "
-            f"reintentando {attempt}/{max_r} en {wait}s ({short})"
-        )
+    with ThreadPoolExecutor(max_workers=CLEANUP_WORKERS) as executor:
+        futures = {
+            executor.submit(limpiar_visitas_bloque, bloque, token): (idx, bloque)
+            for idx, bloque in enumerate(bloques)
+        }
 
-    for idx, bloque in enumerate(bloques):
-        retry_state["idx"] = idx
-        ok, status, resp = limpiar_visitas_bloque(bloque, token, on_retry=_on_retry)
-        retry_msg.empty()
+        for future in as_completed(futures):
+            idx, bloque = futures[future]
+            ok, status, resp = future.result()
 
-        with cont_bloques:
-            if ok:
-                eliminadas += len(bloque)
-                with st.expander(f"✅ Bloque {idx + 1}/{len(bloques)} — {len(bloque)} visita(s)", expanded=False):
-                    st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
-                    st.markdown(f"Status: `{status}`")
-            else:
-                errores.append((idx + 1, status, resp))
-                with st.expander(f"❌ Bloque {idx + 1}/{len(bloques)} — ERROR", expanded=True):
-                    st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
-                    st.markdown(f"Status: `{status}`")
-                    st.write(resp)
+            with cont_bloques:
+                if ok:
+                    eliminadas += len(bloque)
+                    with st.expander(f"✅ Bloque {idx + 1}/{len(bloques)} — {len(bloque)} visita(s)", expanded=False):
+                        st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
+                        st.markdown(f"Status: `{status}`")
+                else:
+                    errores.append((idx + 1, status, resp))
+                    with st.expander(f"❌ Bloque {idx + 1}/{len(bloques)} — ERROR", expanded=True):
+                        st.code(f"PUT {API_BASE}/routes/visits/", language="bash")
+                        st.markdown(f"Status: `{status}`")
+                        st.write(resp)
 
-        update_progress(barra, contador, idx + 1, len(bloques))
-        time.sleep(EDIT_DELAY)
+            completados += 1
+            update_progress(barra, contador, completados, len(bloques))
 
     finish_progress(barra)
 
