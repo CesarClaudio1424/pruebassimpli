@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from estilos import generar_tema, generar_css
 from edicion import pagina_edicion
 from pagina_webhooks import pagina_webhooks
@@ -33,23 +34,6 @@ THEME = generar_tema(dark)
 # --- Estilos ---
 st.markdown(generar_css(THEME, dark), unsafe_allow_html=True)
 
-# --- Autoscroll global ---
-# Ejecuta JS en el contexto principal via onerror (st.markdown ejecuta handlers
-# de eventos aunque React bloquea <script>). Selector .stMain confirmado en
-# Streamlit 1.45 (className="stMain", overflow:auto).
-st.markdown("""
-<img src="x" onerror="
-  this.remove();
-  if(window._srObs){window._srObs.disconnect();}
-  var m=document.querySelector('.stMain')||document.body;
-  var h=m.scrollHeight,t;
-  window._srObs=new MutationObserver(function(){
-    var nh=m.scrollHeight;
-    if(nh>h+30){h=nh;clearTimeout(t);t=setTimeout(function(){m.scrollTo({top:m.scrollHeight,behavior:'smooth'});},60);}
-  });
-  window._srObs.observe(m,{childList:true,subtree:true});
-" style="display:none">
-""", unsafe_allow_html=True)
 
 # --- Sidebar ---
 with st.sidebar:
@@ -109,3 +93,33 @@ elif pagina == "Asignacion Fija Uni":
     pagina_asignacion_fija_uni()
 else:
     pagina_cambiar_fecha_plan()
+
+# --- Autoscroll global ---
+# Corre en iframe (window.parent accesible en Streamlit Cloud mismo origen).
+# Selector .stMain confirmado en fuente de Streamlit 1.45 (overflow:auto).
+# Observa doc.body para evitar referencias stale al elemento tras reruns.
+# Debounce 80ms para no disparar en cada micro-mutacion de React.
+components.html("""
+<script>
+(function() {
+    try {
+        var doc = window.parent.document;
+        var win = window.parent;
+        if (win._srObs) win._srObs.disconnect();
+        var lastH = (doc.querySelector('.stMain') || doc.body).scrollHeight;
+        var t;
+        win._srObs = new MutationObserver(function() {
+            clearTimeout(t);
+            t = setTimeout(function() {
+                var m = doc.querySelector('.stMain') || doc.body;
+                if (m.scrollHeight > lastH + 30) {
+                    lastH = m.scrollHeight;
+                    m.scrollTo({ top: lastH, behavior: 'smooth' });
+                }
+            }, 80);
+        });
+        win._srObs.observe(doc.body, { childList: true, subtree: true });
+    } catch(e) { console.log('[SR autoscroll]', e); }
+})();
+</script>
+""", height=0)
