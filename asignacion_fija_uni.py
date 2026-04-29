@@ -458,18 +458,8 @@ def pagina_asignacion_fija_uni():
         "El campo <strong>habilidad</strong> se cargara desde otro archivo en un paso posterior.",
     )
 
-    render_label("Accion")
-    accion = st.segmented_control(
-        "Accion",
-        ["Actualizar planeacion nacional", "Generar archivo de ruteo"],
-        default="Actualizar planeacion nacional",
-        key="afu_accion",
-        label_visibility="collapsed",
-    )
-
-    st.markdown("---")
-
-    if accion == "Actualizar planeacion nacional":
+    tab1, tab2 = st.tabs(["Actualizar planeacion nacional", "Generar archivo de ruteo"])
+    with tab1:
         _seccion_actualizar_planeacion()
-    elif accion == "Generar archivo de ruteo":
+    with tab2:
         _seccion_generar_ruteo()
