@@ -182,14 +182,18 @@ def _upsert_lote(supabase, registros):
 def _rotar_habilidades(existentes, nueva):
     """
     Pone `nueva` en posicion 1 y recorre las demas sin duplicados.
+    Trata el mismo numero con o sin prefijo F como el mismo skill
+    (ej: '20020' y 'F20020' se consideran iguales) para migrar el
+    formato viejo al nuevo de forma transparente.
     existentes: lista de 4 valores (pueden ser None/vacios).
     Retorna: lista de exactamente 4 valores.
     """
+    nueva_num = nueva.lstrip("F")
     limpia = [
         h for h in existentes
         if h and str(h).strip() not in ("", "None", "null", "nan")
     ]
-    limpia = [h for h in limpia if h != nueva]  # quitar si ya existe
+    limpia = [h for h in limpia if str(h).lstrip("F") != nueva_num]
     rotada = ([nueva] + limpia)[:4]
     while len(rotada) < 4:
         rotada.append(None)
@@ -587,7 +591,7 @@ def _seccion_actualizar_habilidades():
             sin_cliente += 1
             continue
         hab_raw = str(row.iloc[HAB_COL_B_HABILIDAD]).strip() if len(row) > HAB_COL_B_HABILIDAD else ""
-        habilidad = hab_raw.lstrip("R").split("-")[0] if hab_raw else ""
+        habilidad = "F" + hab_raw.lstrip("R").split("-")[0] if hab_raw else ""
         lat = _parse_coord(row.iloc[HAB_COL_L_LATITUD]) if len(row) > HAB_COL_L_LATITUD else None
         lon = _parse_coord(row.iloc[HAB_COL_M_LONGITUD]) if len(row) > HAB_COL_M_LONGITUD else None
         registros.append({"cliente": cliente, "habilidad": habilidad, "x": lat, "y": lon})
