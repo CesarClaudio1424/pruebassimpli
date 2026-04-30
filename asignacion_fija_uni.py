@@ -4,7 +4,9 @@ import pandas as pd
 import requests as _requests
 import unicodedata
 import io
-from datetime import date
+import json
+import os
+from datetime import date, datetime
 from utils import (
     render_header, render_guide, render_stat, render_label,
     render_tip, render_error_item,
@@ -181,6 +183,30 @@ def _upsert_lote(supabase, registros):
     ).execute()
 
 
+_META_FILE = os.path.join(os.path.dirname(__file__), ".planeacion_meta.json")
+
+
+def _get_last_updated() -> dict | None:
+    try:
+        with open(_META_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _set_last_updated(exitosos: int, total: int):
+    data = {
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "exitosos": exitosos,
+        "total": total,
+    }
+    try:
+        with open(_META_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
 def _rotar_habilidades(existentes, nueva):
     """
     Pone `nueva` en posicion 1 y recorre las demas sin duplicados.
@@ -203,6 +229,15 @@ def _rotar_habilidades(existentes, nueva):
 
 
 def _seccion_actualizar_planeacion():
+    meta = _get_last_updated()
+    if meta:
+        render_tip(
+            f"Última actualización: <strong>{meta['ts']}</strong> — "
+            f"{meta['exitosos']:,} de {meta['total']:,} registros subidos"
+        )
+    else:
+        render_tip("Sin actualizaciones registradas aún.")
+
     render_label("Archivo Excel de planeacion")
     archivo = st.file_uploader(
         "Sube el archivo con la planeacion",
@@ -307,6 +342,7 @@ def _seccion_actualizar_planeacion():
         render_tip(f"Hubo {errores} registros con error. Revisa los mensajes arriba.", warning=True)
     else:
         render_tip("Todos los registros se subieron correctamente.")
+        _set_last_updated(exitosos, total)
 
 
 HAB_COL_B_HABILIDAD = 1
