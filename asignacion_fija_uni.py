@@ -320,9 +320,12 @@ RUTEO_COL_F_TIEMPO_SERVICIO = 5
 RUTEO_COL_G_NOTA = 6
 RUTEO_COL_H_LATITUD = 7
 RUTEO_COL_I_LONGITUD = 8
+RUTEO_COL_J_REFERENCE = 9
 RUTEO_COL_K_HABILIDADES = 10
 RUTEO_COL_Q = 16
 RUTEO_COL_R = 17
+
+PLAN_COL_N_REFERENCE = 13
 
 
 def _fetch_planeacion(supabase, clientes):
@@ -356,20 +359,23 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles):
 
     matched = 0
     unmatched = 0
+    ruteo_dia_filas = []
     for idx in range(total):
         nota = str(df.iat[idx, RUTEO_COL_G_NOTA]).strip()
         data = lookup.get(nota) if nota else None
 
         if data:
             matched += 1
-            df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = data.get("hora_inicio") or "07:00"
-            df.iat[idx, RUTEO_COL_E_HORA_FINAL] = data.get("hora_final") or "23:00"
-            df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = data.get("duracion") if data.get("duracion") is not None else 7
+            hora_i = data.get("hora_inicio") or "07:00"
+            hora_f = data.get("hora_final") or "23:00"
+            dur = data.get("duracion") if data.get("duracion") is not None else 7
+            df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = hora_i
+            df.iat[idx, RUTEO_COL_E_HORA_FINAL] = hora_f
+            df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = dur
             if data.get("x") is not None:
                 df.iat[idx, RUTEO_COL_H_LATITUD] = data["x"]
             if data.get("y") is not None:
                 df.iat[idx, RUTEO_COL_I_LONGITUD] = data["y"]
-            # Asignar habilidad por prioridad (1 → 2 → 3 → 4)
             hab_asignada = "Fuera"
             for n in range(1, 5):
                 h = (data.get(f"habilidad_{n}") or "").strip()
@@ -379,13 +385,33 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles):
             df.iat[idx, RUTEO_COL_K_HABILIDADES] = hab_asignada
         else:
             unmatched += 1
-            df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = "07:00"
-            df.iat[idx, RUTEO_COL_E_HORA_FINAL] = "23:00"
-            df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = 7
+            hora_i = "07:00"
+            hora_f = "23:00"
+            dur = 7
+            df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = hora_i
+            df.iat[idx, RUTEO_COL_E_HORA_FINAL] = hora_f
+            df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = dur
             df.iat[idx, RUTEO_COL_K_HABILIDADES] = "Fuera"
+
+        # Recolectar para ruteo_dia antes de limpiar Q/R
+        ref = str(df.iat[idx, RUTEO_COL_J_REFERENCE]).strip() if df.shape[1] > RUTEO_COL_J_REFERENCE else ""
+        if ref and ref not in ("", "nan", "None"):
+            carga_2 = str(df.iat[idx, RUTEO_COL_Q]).strip() if df.shape[1] > RUTEO_COL_Q else ""
+            carga_3 = str(df.iat[idx, RUTEO_COL_R]).strip() if df.shape[1] > RUTEO_COL_R else ""
+            ruteo_dia_filas.append({
+                "reference": ref,
+                "hora_inicio": str(hora_i),
+                "hora_final": str(hora_f),
+                "duracion": str(dur),
+                "carga_2": carga_2 if carga_2 not in ("", "nan", "None") else None,
+                "carga_3": carga_3 if carga_3 not in ("", "nan", "None") else None,
+            })
 
         df.iat[idx, RUTEO_COL_Q] = ""
         df.iat[idx, RUTEO_COL_R] = ""
+
+    if ruteo_dia_filas:
+        _guardar_ruteo_dia(supabase, ruteo_dia_filas)
 
     _render_loader(loader, "Generando archivo...", "Escribiendo xlsx")
 
@@ -439,6 +465,200 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles):
         type="primary",
         use_container_width=True,
     )
+
+
+def _guardar_ruteo_dia(supabase, filas):
+    try:
+        supabase.table("ruteo_dia").upsert(filas, on_conflict="reference").execute()
+    except Exception as e:
+        st.warning(f"No se pudo guardar en ruteo_dia: {e}")
+
+
+def _get_visita_by_reference(token, reference):
+    url = f"https://api.simpliroute.com/v1/routes/visits/reference/{reference}/"
+    r = _requests.get(url, headers={"Authorization": f"Token {token}"}, timeout=30)
+    if r.status_code != 200:
+        return None, f"HTTP {r.status_code}"
+    data = r.json()
+    if isinstance(data, list):
+        return data, None
+    if isinstance(data, dict) and "results" in data:
+        return data["results"], None
+    if isinstance(data, dict) and "id" in data:
+        return [data], None
+    return [], None
+
+
+def _procesar_actualizar_simpli(token, references, lookup_ruteo):
+    barra = st.progress(0, text="Buscando visitas en SimpliRoute...")
+    total = len(references)
+    visitas_put = []
+    errores_get = []
+
+    for i, ref in enumerate(references):
+        barra.progress((i + 1) / total, text=f"Buscando {ref} ({i+1}/{total})...")
+        results, err = _get_visita_by_reference(token, ref)
+        if err:
+            errores_get.append(f"{ref}: {err}")
+            continue
+        if not results:
+            errores_get.append(f"{ref}: no encontrado")
+            continue
+        ruteo = lookup_ruteo[ref]
+        for v in results:
+            payload = {
+                "id": v["id"],
+                "reference": v.get("reference", ref),
+                "title": v.get("title", ""),
+                "address": v.get("address", ""),
+                "planned_date": v.get("planned_date", ""),
+                "route": v.get("route", ""),
+                "window_start": ruteo.get("hora_inicio") or "",
+                "window_end": ruteo.get("hora_final") or "",
+                "time_at_stop": _try_num(ruteo.get("duracion")),
+                "load_2": _try_num(ruteo.get("carga_2")),
+                "load_3": _try_num(ruteo.get("carga_3")),
+            }
+            visitas_put.append(payload)
+
+    barra.progress(1.0, text="Actualizando en SimpliRoute...")
+    ok = 0
+    errores_put = []
+    MAX_BLOCK = 500
+    headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
+    for i in range(0, len(visitas_put), MAX_BLOCK):
+        lote = visitas_put[i:i + MAX_BLOCK]
+        try:
+            r = _requests.put(
+                "https://api.simpliroute.com/v1/routes/visits/",
+                json=lote, headers=headers, timeout=120,
+            )
+            if r.status_code in (200, 201, 204):
+                ok += len(lote)
+            else:
+                errores_put.append(f"Lote {i//MAX_BLOCK+1}: {r.status_code} — {r.text[:200]}")
+        except Exception as e:
+            errores_put.append(f"Lote {i//MAX_BLOCK+1}: {e}")
+
+    barra.empty()
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(render_stat(ok, "Actualizados OK"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(len(errores_get), "Sin encontrar"), unsafe_allow_html=True)
+    with col3:
+        st.markdown(render_stat(len(errores_put), "Errores PUT"), unsafe_allow_html=True)
+
+    for e in errores_get:
+        render_error_item(e)
+    for e in errores_put:
+        render_error_item(e)
+    if not errores_get and not errores_put:
+        render_tip(f"Todos los registros actualizados correctamente.")
+
+
+def _try_num(val):
+    if val is None:
+        return None
+    try:
+        return float(val) if "." in str(val) else int(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _seccion_actualizar_datos_simpli():
+    render_label("Cuenta")
+    cuenta = st.radio(
+        "Cuenta",
+        ["Tláhuac", "Monterrey"],
+        horizontal=True,
+        key="ads_cuenta",
+        label_visibility="collapsed",
+    )
+    token_key = "token_tlahuac" if cuenta == "Tláhuac" else "token_monterrey"
+    try:
+        token = st.secrets["cuentas_unilever"][token_key].strip()
+    except Exception:
+        render_tip("Token no configurado en secrets.", warning=True)
+        return
+
+    render_label("Archivo Plan SimpliRoute")
+    plan_file = st.file_uploader(
+        "Plan",
+        type=["xlsx", "xls"],
+        key="ads_plan",
+        label_visibility="collapsed",
+    )
+    if not plan_file:
+        render_tip(
+            "Sube el archivo Plan de SimpliRoute exportado desde la plataforma. "
+            "Se toma el <strong>reference</strong> de la columna <strong>N</strong>. "
+            "Los valores de ventana y carga provienen del último archivo procesado en "
+            "<em>Generar archivo de ruteo</em>."
+        )
+        return
+
+    try:
+        df_plan = pd.read_excel(plan_file, dtype=str, header=0).fillna("")
+    except Exception as e:
+        st.error(f"Error al leer el archivo: {e}")
+        return
+
+    if df_plan.shape[1] <= PLAN_COL_N_REFERENCE:
+        st.error("El archivo no tiene suficientes columnas (se esperaba al menos hasta la N).")
+        return
+
+    references = [
+        v for v in (str(x).strip() for x in df_plan.iloc[:, PLAN_COL_N_REFERENCE])
+        if v and v not in ("nan", "None", "")
+    ]
+    references = list(dict.fromkeys(references))
+
+    if not references:
+        st.error("No se encontraron references en la columna N.")
+        return
+
+    st.markdown(render_stat(len(references), "References en el Plan"), unsafe_allow_html=True)
+
+    supabase = _get_supabase_client()
+    lookup_ruteo = {}
+    for i in range(0, len(references), 500):
+        lote = references[i:i + 500]
+        try:
+            resp = supabase.table("ruteo_dia").select(
+                "reference,hora_inicio,hora_final,duracion,carga_2,carga_3"
+            ).in_("reference", lote).execute()
+            for row in resp.data or []:
+                lookup_ruteo[row["reference"]] = row
+        except Exception as e:
+            st.warning(f"Error consultando ruteo_dia: {e}")
+
+    encontrados = [r for r in references if r in lookup_ruteo]
+    sin_datos = len(references) - len(encontrados)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(render_stat(len(encontrados), "Con datos de ruteo"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(sin_datos, "Sin datos de ruteo"), unsafe_allow_html=True)
+
+    if not encontrados:
+        render_tip(
+            "Ningún reference encontrado en la tabla de ruteo. "
+            "Primero genera el archivo de ruteo en la tab <em>Generar archivo de ruteo</em>.",
+            warning=True,
+        )
+        return
+
+    if sin_datos:
+        render_tip(
+            f"{sin_datos} references no tienen datos de ruteo y serán omitidos.",
+            warning=True,
+        )
+
+    if st.button("Actualizar en SimpliRoute", type="primary", use_container_width=True):
+        _procesar_actualizar_simpli(token, encontrados, lookup_ruteo)
 
 
 _VEHICLE_PATTERN = re.compile(r'^R(\d+)-MX\d+$')
@@ -845,10 +1065,12 @@ def pagina_asignacion_fija_uni():
         "El campo <strong>habilidad</strong> se cargara desde otro archivo en un paso posterior.",
     )
 
-    tab1, tab2, tab3 = st.tabs(["Actualizar planeacion nacional", "Generar archivo de ruteo", "Actualizar Habilidades"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Actualizar planeacion nacional", "Generar archivo de ruteo", "Actualizar Habilidades", "Actualizar datos Simpli"])
     with tab1:
         _seccion_actualizar_planeacion()
     with tab2:
         _seccion_generar_ruteo()
     with tab3:
         _seccion_actualizar_habilidades()
+    with tab4:
+        _seccion_actualizar_datos_simpli()
