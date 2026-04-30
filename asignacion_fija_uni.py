@@ -345,7 +345,7 @@ def _fetch_planeacion(supabase, clientes):
     return datos
 
 
-def _procesar_ruteo(df, nombre_original, habilidades_disponibles):
+def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláhuac"):
     loader = st.empty()
     supabase = _get_supabase_client()
 
@@ -411,7 +411,7 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles):
         df.iat[idx, RUTEO_COL_R] = ""
 
     if ruteo_dia_filas:
-        _guardar_ruteo_dia(supabase, ruteo_dia_filas)
+        _guardar_ruteo_dia(supabase, ruteo_dia_filas, agencia)
 
     _render_loader(loader, "Generando archivo...", "Escribiendo xlsx")
 
@@ -467,11 +467,16 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles):
     )
 
 
-def _guardar_ruteo_dia(supabase, filas):
+def _tabla_ruteo_dia(agencia):
+    return "ruteo_dia_tlahuac" if agencia == "Tláhuac" else "ruteo_dia_monterrey"
+
+
+def _guardar_ruteo_dia(supabase, filas, agencia):
+    tabla = _tabla_ruteo_dia(agencia)
     try:
-        supabase.table("ruteo_dia").upsert(filas, on_conflict="reference").execute()
+        supabase.table(tabla).upsert(filas, on_conflict="reference").execute()
     except Exception as e:
-        st.warning(f"No se pudo guardar en ruteo_dia: {e}")
+        st.warning(f"No se pudo guardar en {tabla}: {e}")
 
 
 def _get_visita_by_reference(token, reference):
@@ -626,13 +631,13 @@ def _seccion_actualizar_datos_simpli():
     for i in range(0, len(references), 500):
         lote = references[i:i + 500]
         try:
-            resp = supabase.table("ruteo_dia").select(
+            resp = supabase.table(_tabla_ruteo_dia(cuenta)).select(
                 "reference,hora_inicio,hora_final,duracion,carga_2,carga_3"
             ).in_("reference", lote).execute()
             for row in resp.data or []:
                 lookup_ruteo[row["reference"]] = row
         except Exception as e:
-            st.warning(f"Error consultando ruteo_dia: {e}")
+            st.warning(f"Error consultando tabla de ruteo: {e}")
 
     encontrados = [r for r in references if r in lookup_ruteo]
     sin_datos = len(references) - len(encontrados)
@@ -870,7 +875,7 @@ def _seccion_generar_ruteo():
     st.dataframe(df.head(10), use_container_width=True)
 
     if st.button("Procesar y generar archivo", type="primary", use_container_width=True):
-        _procesar_ruteo(df, archivo.name, habilidades_disponibles)
+        _procesar_ruteo(df, archivo.name, habilidades_disponibles, agencia)
 
 
 def _seccion_actualizar_habilidades():
