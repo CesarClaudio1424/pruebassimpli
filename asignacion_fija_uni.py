@@ -1,5 +1,7 @@
+import re
 import streamlit as st
 import pandas as pd
+import requests as _requests
 import unicodedata
 import io
 from datetime import date
@@ -439,6 +441,114 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles):
     )
 
 
+_VEHICLE_PATTERN = re.compile(r'^R(\d+)-MX\d+$')
+_SR_TIMEOUT = 30
+
+
+def _extraer_num_vehiculo(texto):
+    """R20020-MX01 → '20020',  '20020' → '20020',  otros → None."""
+    texto = texto.strip()
+    m = _VEHICLE_PATTERN.match(texto)
+    if m:
+        return m.group(1)
+    if re.match(r'^\d+$', texto):
+        return texto
+    return None
+
+
+def _sr_headers(token):
+    return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
+
+
+def _actualizar_skills_tlahuac(nums_activos):
+    try:
+        token = st.secrets["cuentas_unilever"]["token_tlahuac"].strip()
+    except (KeyError, FileNotFoundError):
+        st.error("Falta token_tlahuac en [cuentas_unilever] en secrets.")
+        return
+
+    loader = st.empty()
+    _render_loader(loader, "Consultando vehículos y skills en SimpliRoute...")
+    try:
+        vehiculos = _requests.get(
+            f"https://api.simpliroute.com/v1/routes/vehicles/",
+            headers=_sr_headers(token), timeout=_SR_TIMEOUT,
+        ).json()
+        skills_raw = _requests.get(
+            f"https://api.simpliroute.com/v1/routes/skills/",
+            headers=_sr_headers(token), timeout=_SR_TIMEOUT,
+        ).json()
+    except Exception as e:
+        loader.empty()
+        st.error(f"Error al consultar SimpliRoute: {e}")
+        return
+    loader.empty()
+
+    skill_map = {s["skill"]: s["id"] for s in skills_raw}
+    fuera_id = skill_map.get("Fuera")
+    if not fuera_id:
+        st.error("No se encontró el skill 'Fuera' en la cuenta.")
+        return
+
+    # Solo vehiculos con patron R#####-MX##
+    managed = [(v["id"], v["name"]) for v in vehiculos if _VEHICLE_PATTERN.match(v["name"])]
+    total = len(managed)
+
+    barra, contador, contenedor_errores = create_progress_tracker(total, "Actualizando skills...")
+
+    ok = 0
+    errores = 0
+    for i, (vid, vname) in enumerate(managed):
+        m = _VEHICLE_PATTERN.match(vname)
+        num = m.group(1) if m else None
+
+        if num and num in nums_activos:
+            skill_name = f"F{num}"
+            skill_id = skill_map.get(skill_name)
+            if not skill_id:
+                with contenedor_errores:
+                    render_error_item(f"{vname} — skill {skill_name} no existe, se asigna Fuera")
+                skill_id = fuera_id
+        else:
+            skill_id = fuera_id
+
+        try:
+            r = _requests.patch(
+                f"https://api.simpliroute.com/v1/routes/vehicles/{vid}/",
+                headers=_sr_headers(token),
+                json={"skills": [skill_id]},
+                timeout=_SR_TIMEOUT,
+            )
+            if 200 <= r.status_code < 300:
+                ok += 1
+            else:
+                with contenedor_errores:
+                    render_error_item(f"{vname} — HTTP {r.status_code}")
+                errores += 1
+        except Exception as e:
+            with contenedor_errores:
+                render_error_item(f"{vname} — {e}")
+            errores += 1
+
+        update_progress(barra, contador, i + 1, total)
+
+    finish_progress(barra)
+
+    n_activos = sum(1 for _, n in managed if (m := _VEHICLE_PATTERN.match(n)) and m.group(1) in nums_activos)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(render_stat(ok, "Actualizados OK"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(n_activos, "Con habilidad F"), unsafe_allow_html=True)
+    with col3:
+        st.markdown(render_stat(total - n_activos, "Con Fuera"), unsafe_allow_html=True)
+
+    if errores:
+        render_tip(f"Hubo {errores} vehículos con error.", warning=True)
+    else:
+        render_tip("Todos los vehículos actualizados correctamente.")
+
+
 def _seccion_generar_ruteo():
     render_label("Agencia")
     agencia = st.radio(
@@ -452,15 +562,24 @@ def _seccion_generar_ruteo():
     habilidades_disponibles = set()
 
     if agencia == "Tláhuac":
-        render_label("Vehículos disponibles")
+        render_label("Vehículos activos este día")
         vehiculos_txt = st.text_area(
             "Vehiculos",
-            placeholder="Un vehículo por línea\nEj: Camion-01\nCamion-02",
+            placeholder="Un vehículo por línea\nEj: R20020-MX01 ó 20020",
             key="agr_vehiculos",
             label_visibility="collapsed",
             height=120,
         )
-        habilidades_disponibles = {v.strip() for v in vehiculos_txt.splitlines() if v.strip()}
+        nums_activos = {n for line in vehiculos_txt.splitlines() if (n := _extraer_num_vehiculo(line))}
+        habilidades_disponibles = {f"F{n}" for n in nums_activos}
+
+        if nums_activos:
+            render_tip(
+                f"<strong>{len(nums_activos)}</strong> vehículos activos — "
+                "los demás quedarán con <strong>Fuera</strong>."
+            )
+            if st.button("Actualizar skills en SimpliRoute", key="agr_btn_sr"):
+                _actualizar_skills_tlahuac(nums_activos)
     else:
         col_a, col_b = st.columns(2)
         with col_a:
