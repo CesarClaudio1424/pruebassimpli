@@ -13,7 +13,7 @@ App Streamlit multi-herramienta con navegacion por sidebar. Incluye trece herram
 9. **Zonas KML** — Crea zonas en SimpliRoute desde archivos KML (poligonos exportados de Google My Maps), o elimina zonas existentes de una cuenta.
 10. **Recuperar Visitas LVP** — Busca visitas Liverpool por referencia y las asigna a la ruta/fecha correcta (GET + PUT).
 11. **Eliminar Visitas BAT** — (herramienta secundaria, solo busqueda por API). La version completa con acceso a BD es una app Flet standalone en `C:\Proyectos\EliminarBAT\`.
-12. **Asignacion Fija Uni** — Sube un Excel de planeacion Unilever y alimenta Supabase (tabla `planeacion_nacional`) con upsert por cliente. Filtra solo agencias Tláhuac y Monterrey.
+12. **Asignacion Fija Uni** — Cuatro sub-tabs: (a) Actualizar planeacion nacional: sube Excel de planeacion y hace upsert en Supabase (`planeacion_nacional`); (b) Generar archivo de ruteo: rellena ventanas/lat/lon/habilidades desde Supabase y guarda datos en tablas provisionales por agencia; (c) Actualizar Habilidades: asigna habilidad F-prefijada (habilidad_1..4 con rotacion) desde archivo de planeacion; (d) Actualizar datos Simpli: sube Plan SimpliRoute, toma references (col N), los cruza con tabla provisional y hace PUT de ventanas y cargas en SimpliRoute.
 13. **Cambio de Fechas** — Tres sub-tabs: (a) Cambiar Fecha de Plan: mueve un plan y sus rutas a nueva fecha; (b) Cambiar Fecha de Rutas: actualiza `planned_date` de rutas seleccionadas (cascadea a visitas, no al plan); (c) Cambiar Fecha de Visitas: actualiza `planned_date` de visitas en bulk (no afecta rutas ni plan).
 
 ## Stack
@@ -199,6 +199,12 @@ streamlit run main.py
 - Auth: `Authorization: Token {token}` (desde columna `token` de `cuentas.csv` segun cuenta seleccionada)
 - Fallback paralelo: `ThreadPoolExecutor` con 10 hilos, ±30 dias desde hoy
 
+### SimpliRoute (Asignacion Fija Uni — Actualizar datos Simpli)
+- `GET /v1/routes/visits/reference/{reference}/` — busqueda por referencia (respuesta paginada `{count, results}`)
+- `PUT /v1/routes/visits/` — edicion bulk: actualiza `window_start`, `window_end`, `time_at_stop`, `load_2`, `load_3`
+- Auth: `Authorization: Token {token}` (desde secrets: `cuentas_unilever.token_tlahuac` o `token_monterrey`)
+- Supabase tablas provisionales: `ruteo_dia_tlahuac` / `ruteo_dia_monterrey` — se rellenan al generar archivo de ruteo
+
 ### SimpliRoute (Zonas KML)
 - `POST /v1/zones/` - Crear zona. Payload: `{ "name", "coordinates", "vehicles": [], "schedules": [] }`
 - `GET /v1/zones/` - Listar zonas de la cuenta (response: lista o `{results: [...]}`)
@@ -217,11 +223,13 @@ streamlit run main.py
    - Si no encuentra: fallback paralelo con `ThreadPoolExecutor` (10 hilos, ±30 dias desde hoy)
    - `GET /v1/plans/{fecha}/vehicles/` — resuelve route_id por nombre de vehiculo (case-insensitive)
    - Muestra request + response en expanders por fila (expandido si hay error)
-5. Stats: listos / visita ok sin ruta / no encontradas
-6. **Procesar N visita(s)** — solo las que tienen visita y ruta encontradas
+5. Stats: listos / visita ok sin ruta / no encontradas / pendiente de seleccion (morado)
+6. Si el endpoint devuelve multiples visitas para un mismo reference: muestra tabla seleccionable (`st.dataframe` con `on_select="rerun"`) para que el usuario elija la correcta. Seleccion se guarda en `st.session_state.recuperar_selecciones[idx]`.
+7. **Procesar N visita(s)** — solo las que tienen visita y ruta encontradas (incluyendo selecciones manuales)
    - `PUT /v1/routes/visits/{id}` con `route` y `planned_date`
 - `cuentas.csv` se lee con `encoding="latin-1"` (tiene acentos en nombres)
 - Respuesta del endpoint reference puede ser lista, objeto con `id`, o paginada `{results: [...]}`
+- Duplicados de reference: se muestra tabla de desambiguacion ordenada por ID desc para elegir la visita correcta
 
 ## Flujo: Zonas KML
 1. Usuario ingresa token de API
@@ -280,6 +288,38 @@ Tres sub-tabs en `cambiar_fecha_plan.py`. Todas validan token contra `/accounts/
 2. Fecha origen → `GET /v1/routes/visits/paginated/` (con retry/backoff, igual que Eliminar Visitas)
 3. Nueva fecha → `PUT /v1/routes/visits/` bulk en bloques de MAX_BLOCK_SIZE
 - **Nota:** solo cambia visitas. Rutas y plan NO se modifican.
+
+## Flujo: Asignacion Fija Uni
+Cuatro tabs en `asignacion_fija_uni.py`. Supabase client se obtiene via `_get_supabase_client()` (secrets `supabase.url` + `supabase.key`).
+
+### Tab 1 — Actualizar planeacion nacional
+1. Sube Excel de planeacion Unilever
+2. Filtra filas de Tláhuac y Monterrey (columna C)
+3. Extrae: cliente (D), sector (AH), agencia, latitud (X), longitud (Y)
+4. Upsert en `planeacion_nacional` on_conflict=cliente — NO toca habilidad_1..4
+
+### Tab 2 — Generar archivo de ruteo
+1. Elige agencia (Tláhuac o Monterrey)
+2. Tláhuac: pega numeros de vehiculos activos (acepta `R20020-MX01` o `20020`) → `habilidades_disponibles = {F20020, ...}`
+3. Monterrey: define cuantas rutas + cuentas especiales
+4. Sube Excel de ruteo → `_procesar_ruteo`: rellena col D/E/F (ventanas/duracion), H/I (lat/lon), K (habilidad) desde `planeacion_nacional`, vacia Q/R
+5. Al terminar: guarda reference (col J), hora_inicio, hora_final, duracion, carga_2 (col Q original), carga_3 (col R original) en `ruteo_dia_tlahuac` o `ruteo_dia_monterrey` via upsert
+- Habilidad: prioridad habilidad_1 → habilidad_2 → habilidad_3 → habilidad_4, primera que este en habilidades_disponibles gana; si ninguna → "Fuera"
+
+### Tab 3 — Actualizar Habilidades
+1. Sube archivo de planeacion con col B (habilidad formato R20020-MX01 → extrae F20020) y col S (cliente)
+2. Lee habilidades existentes de `planeacion_nacional` para cada cliente
+3. Rotacion: nueva habilidad va a habilidad_1, las demas se recorren sin duplicados (compara sin prefijo F)
+4. Upsert en `planeacion_nacional`: habilidad_1..4 + agencia (NOT NULL)
+- Tlahuac: boton "Actualizar skills en SimpliRoute" → PATCH vehiculos R#####-MX## con skill F{num} (activos) o Fuera (inactivos)
+
+### Tab 4 — Actualizar datos Simpli
+1. Selecciona cuenta (Tláhuac o Monterrey) — token desde secrets
+2. Sube Plan SimpliRoute exportado → extrae references de col N (indice 13)
+3. Busca cada reference en `ruteo_dia_tlahuac` / `ruteo_dia_monterrey`
+4. Para cada reference encontrado: GET visit por reference → obtiene id, title, address, planned_date, route
+5. PUT bulk con window_start, window_end, time_at_stop, load_2, load_3
+- References no encontrados en ruteo_dia se omiten (requiere haber generado el archivo de ruteo primero)
 
 ### SimpliRoute (Cambio de Fechas)
 - `GET /v1/routes/plans/?start_date={}&end_date={}` — listar planes por rango
