@@ -576,7 +576,9 @@ def _seccion_generar_ruteo():
         if nums_activos:
             render_tip(
                 f"<strong>{len(nums_activos)}</strong> vehículos activos — "
-                "los demás quedarán con <strong>Fuera</strong>."
+                "habilidades: "
+                + ", ".join(f"<code>{h}</code>" for h in sorted(habilidades_disponibles))
+                + " — los demás quedarán con <strong>Fuera</strong>."
             )
             if st.button("Actualizar skills en SimpliRoute", key="agr_btn_sr"):
                 _actualizar_skills_tlahuac(nums_activos)
