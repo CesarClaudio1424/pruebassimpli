@@ -15,6 +15,7 @@ from mover_visitas_likewise import pagina_mover_visitas_likewise
 from eliminar_visitas import pagina_eliminar_visitas
 from asignacion_fija_uni import pagina_asignacion_fija_uni
 from cambiar_fecha_plan import pagina_cambiar_fecha_plan
+from checkout_bat import pagina_checkout_bat
 
 st.set_page_config(
     page_title="SimpliRoute Tools",
@@ -52,7 +53,7 @@ with st.sidebar:
 
     pagina = st.radio(
         "Herramienta",
-        ["Edicion Masiva de Visitas", "Webhooks Likewise", "Mover Visitas Likewise", "Bloqueo LVP", "Reporte Visitas/Rutas", "Checkout General", "Eliminacion de Items", "Unilever", "Zonas KML", "Recuperar Visitas LVP", "Eliminar Visitas BAT", "Eliminar Visitas", "Asignacion Fija Uni", "Cambio de Fechas"],
+        ["Edicion Masiva de Visitas", "Webhooks Likewise", "Mover Visitas Likewise", "Bloqueo LVP", "Reporte Visitas/Rutas", "Checkout General", "Checkout BAT", "Eliminacion de Items", "Unilever", "Zonas KML", "Recuperar Visitas LVP", "Eliminar Visitas BAT", "Eliminar Visitas", "Asignacion Fija Uni", "Cambio de Fechas"],
         label_visibility="collapsed",
     )
 
@@ -77,6 +78,8 @@ elif pagina == "Reporte Visitas/Rutas":
     pagina_reporte_visitas()
 elif pagina == "Checkout General":
     pagina_checkout_general()
+elif pagina == "Checkout BAT":
+    pagina_checkout_bat()
 elif pagina == "Eliminacion de Items":
     pagina_eliminacion_items()
 elif pagina == "Unilever":
