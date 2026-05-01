@@ -65,21 +65,7 @@ def _col_letter_to_index(letter):
 
 COL_AGENCIA = _col_letter_to_index("C")
 COL_CLIENTE = _col_letter_to_index("D")
-COL_X = _col_letter_to_index("X")
-COL_Y = _col_letter_to_index("Y")
 COL_SECTOR = _col_letter_to_index("AH")
-
-
-def _parse_coord(valor):
-    if valor is None:
-        return None
-    texto = str(valor).strip().replace(",", ".")
-    if not texto:
-        return None
-    try:
-        return float(texto)
-    except ValueError:
-        return None
 
 
 def _sin_acentos(texto):
@@ -117,7 +103,7 @@ def _extraer_registros(df):
     descartados_agencia = 0
     descartados_vacios = 0
 
-    max_col = max(COL_AGENCIA, COL_CLIENTE, COL_SECTOR, COL_X, COL_Y)
+    max_col = max(COL_AGENCIA, COL_CLIENTE, COL_SECTOR)
     for _, row in df.iterrows():
         if len(row) <= max_col:
             descartados_vacios += 1
@@ -126,8 +112,6 @@ def _extraer_registros(df):
         agencia_raw = str(row.iloc[COL_AGENCIA]).strip()
         cliente = str(row.iloc[COL_CLIENTE]).strip()
         sector = str(row.iloc[COL_SECTOR]).strip()
-        x = _parse_coord(row.iloc[COL_X])
-        y = _parse_coord(row.iloc[COL_Y])
 
         if not cliente:
             descartados_vacios += 1
@@ -142,8 +126,6 @@ def _extraer_registros(df):
             "cliente": cliente,
             "sector": sector,
             "agencia": agencia,
-            "x": x,
-            "y": y,
         })
 
     vistos = set()
@@ -248,7 +230,7 @@ def _seccion_actualizar_planeacion():
     if not archivo:
         render_tip(
             "Columnas esperadas: <strong>C</strong> = Agencia, <strong>D</strong> = Cliente, "
-            "<strong>X</strong> = Latitud, <strong>Y</strong> = Longitud, <strong>AH</strong> = Sector. "
+            "<strong>AH</strong> = Sector. "
             "Solo se cargan filas de <strong>Tláhuac</strong> y <strong>Monterrey</strong>."
         )
         return
@@ -346,16 +328,12 @@ def _seccion_actualizar_planeacion():
 
 
 HAB_COL_B_HABILIDAD = 1
-HAB_COL_L_LATITUD = 11
-HAB_COL_M_LONGITUD = 12
 HAB_COL_S_CLIENTE = 18
 
 RUTEO_COL_D_HORA_INICIAL = 3
 RUTEO_COL_E_HORA_FINAL = 4
 RUTEO_COL_F_TIEMPO_SERVICIO = 5
 RUTEO_COL_G_NOTA = 6
-RUTEO_COL_H_LATITUD = 7
-RUTEO_COL_I_LONGITUD = 8
 RUTEO_COL_J_REFERENCE = 9
 RUTEO_COL_K_HABILIDADES = 10
 RUTEO_COL_Q = 16
@@ -370,7 +348,7 @@ def _fetch_planeacion(supabase, clientes):
         lote = clientes[i:i + 500]
         try:
             resp = supabase.table("planeacion_nacional").select(
-                "cliente,hora_inicio,hora_final,duracion,x,y,"
+                "cliente,hora_inicio,hora_final,duracion,"
                 "habilidad_1,habilidad_2,habilidad_3,habilidad_4"
             ).in_("cliente", lote).execute()
             for row in resp.data or []:
@@ -408,10 +386,6 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
             df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = hora_i
             df.iat[idx, RUTEO_COL_E_HORA_FINAL] = hora_f
             df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = dur
-            if data.get("x") is not None:
-                df.iat[idx, RUTEO_COL_H_LATITUD] = data["x"]
-            if data.get("y") is not None:
-                df.iat[idx, RUTEO_COL_I_LONGITUD] = data["y"]
             hab_asignada = "Fuera"
             for n in range(1, 5):
                 h = (data.get(f"habilidad_{n}") or "").strip()
@@ -881,8 +855,9 @@ def _seccion_generar_ruteo():
     if not archivo:
         render_tip(
             "Se actualizan: <strong>D</strong> Hora Inicial, <strong>E</strong> Hora Final, "
-            "<strong>F</strong> Tiempo Servicio, <strong>H</strong> Latitud, <strong>I</strong> Longitud, "
-            "<strong>K</strong> Habilidades requeridas. Se vacian <strong>Q</strong> y <strong>R</strong>. "
+            "<strong>F</strong> Tiempo Servicio, <strong>K</strong> Habilidades requeridas. "
+            "Se vacian <strong>Q</strong> y <strong>R</strong>. "
+            "Las columnas <strong>H</strong> y <strong>I</strong> (Latitud/Longitud) pasan intactas. "
             "Match por columna <strong>G</strong> (Nota) vs <strong>cliente</strong> de Supabase. "
             "Sin match o sin habilidad disponible: habilidad = <strong>Fuera</strong>."
         )
@@ -945,9 +920,7 @@ def _seccion_actualizar_habilidades():
         render_tip(
             "Formato esperado: <strong>SimpliRoute_Plan_YYYY-MM-DD.xlsx</strong>. "
             "Columna <strong>S</strong> = Cliente (clave de match), "
-            "<strong>B</strong> = Habilidad (formato R20020-MX01 → se extrae 20020), "
-            "<strong>L</strong> = Latitud, "
-            "<strong>M</strong> = Longitud. "
+            "<strong>B</strong> = Habilidad (formato R20020-MX01 → se extrae 20020). "
             "La habilidad se coloca en <strong>habilidad_1</strong> y se recorren las existentes."
         )
         return
@@ -974,9 +947,7 @@ def _seccion_actualizar_habilidades():
             continue
         hab_raw = str(row.iloc[HAB_COL_B_HABILIDAD]).strip() if len(row) > HAB_COL_B_HABILIDAD else ""
         habilidad = "F" + hab_raw.lstrip("R").split("-")[0] if hab_raw else ""
-        lat = _parse_coord(row.iloc[HAB_COL_L_LATITUD]) if len(row) > HAB_COL_L_LATITUD else None
-        lon = _parse_coord(row.iloc[HAB_COL_M_LONGITUD]) if len(row) > HAB_COL_M_LONGITUD else None
-        registros.append({"cliente": cliente, "habilidad": habilidad, "x": lat, "y": lon})
+        registros.append({"cliente": cliente, "habilidad": habilidad})
 
     vistos = set()
     unicos = []
@@ -1042,8 +1013,6 @@ def _seccion_actualizar_habilidades():
         payload.append({
             "cliente": cliente,
             "agencia": agencia,
-            "x": r["x"],
-            "y": r["y"],
             "habilidad_1": rotada[0],
             "habilidad_2": rotada[1],
             "habilidad_3": rotada[2],
@@ -1099,9 +1068,9 @@ def pagina_asignacion_fija_uni():
             "Selecciona la accion a ejecutar.",
             "Sube el archivo Excel con la planeacion.",
             "Se filtran solo filas de Tláhuac y Monterrey (columna C).",
-            "Se extraen Cliente (D), Latitud (X), Longitud (Y) y Sector (AH).",
+            "Se extraen Cliente (D) y Sector (AH).",
             "Clientes nuevos: se crean con hora 07:00-23:00 y duracion 7 por defecto.",
-            "Clientes existentes: solo se actualizan sector, agencia, x, y. El resto queda intacto.",
+            "Clientes existentes: solo se actualizan sector y agencia. El resto queda intacto.",
         ],
         "El campo <strong>habilidad</strong> se cargara desde otro archivo en un paso posterior.",
     )
