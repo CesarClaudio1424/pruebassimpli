@@ -56,6 +56,9 @@ def _enviar_checkout(token, acc_id, planned_date, visit_id, reference):
     return reference, visit_id, False, "Reintentos agotados"
 
 
+BAT_ACCOUNT_ID = 95718
+
+
 def _dedup_ordered(lst):
     seen = set()
     return [x for x in lst if not (x in seen or seen.add(x))]
@@ -195,7 +198,7 @@ def pagina_checkout_bat():
             items.append({
                 "reference": ref,
                 "visit_id": visita["id"],
-                "account_id": visita["account_id"],
+                "account_id": BAT_ACCOUNT_ID,
                 "planned_date": visita["planned_date"],
             })
 
