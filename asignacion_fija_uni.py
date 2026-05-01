@@ -549,8 +549,12 @@ def _enviar_actualizaciones(token, visitas_put):
 def _try_num(val):
     if val is None:
         return None
+    s = str(val).strip()
+    if not s or s.lower() in ("none", "nan", "null", ""):
+        return None
     try:
-        return float(val) if "." in str(val) else int(val)
+        f = float(s)
+        return int(f) if f == int(f) else f
     except (ValueError, TypeError):
         return None
 
@@ -627,7 +631,7 @@ def _seccion_actualizar_datos_simpli():
             if not ref or ref not in lookup_ruteo:
                 continue
             ruteo = lookup_ruteo[ref]
-            visitas_put.append({
+            item = {
                 "id": v["id"],
                 "reference": ref,
                 "title": v.get("title", ""),
@@ -636,10 +640,16 @@ def _seccion_actualizar_datos_simpli():
                 "route": v.get("route", ""),
                 "window_start": ruteo.get("hora_inicio") or "",
                 "window_end": ruteo.get("hora_final") or "",
-                "time_at_stop": _try_num(ruteo.get("duracion")),
-                "load_2": _try_num(ruteo.get("carga_2")),
-                "load_3": _try_num(ruteo.get("carga_3")),
-            })
+            }
+            for campo_api, campo_ruteo in (
+                ("time_at_stop", "duracion"),
+                ("load_2", "carga_2"),
+                ("load_3", "carga_3"),
+            ):
+                val = _try_num(ruteo.get(campo_ruteo))
+                if val is not None:
+                    item[campo_api] = val
+            visitas_put.append(item)
 
         st.session_state["ads_visitas_put"] = visitas_put
         st.session_state["ads_total_visitas"] = len(visitas)
