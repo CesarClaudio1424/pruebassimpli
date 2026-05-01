@@ -76,9 +76,13 @@ def pagina_checkout_bat():
         tip="Si un reference tiene múltiples visitas, se enviará checkout para todas ellas.",
     )
 
-    token = load_secret(
+    token_bat = load_secret(
         "bat_token",
         "No se encontró `bat_token` en `.streamlit/secrets.toml`. Configura `[api_config]` con `bat_token`.",
+    )
+    token_checkout = load_secret(
+        "checkout_token",
+        "No se encontró `checkout_token` en `.streamlit/secrets.toml`. Configura `[api_config]` con `checkout_token`.",
     )
 
     # --- Input de referencias ---
@@ -147,7 +151,7 @@ def pagina_checkout_bat():
         resultados = {}
 
         with ThreadPoolExecutor(max_workers=3) as ex:
-            futures = {ex.submit(_buscar_reference, ref, token): ref for ref in references}
+            futures = {ex.submit(_buscar_reference, ref, token_bat): ref for ref in references}
             for future in as_completed(futures):
                 ref, visitas, err = future.result()
                 resultados[ref] = {"visitas": visitas, "error": err}
@@ -225,7 +229,7 @@ def pagina_checkout_bat():
 
     with ThreadPoolExecutor(max_workers=3) as ex:
         futures = {
-            ex.submit(_enviar_checkout, token, it["account_id"], it["planned_date"], it["visit_id"], it["reference"]): it
+            ex.submit(_enviar_checkout, token_checkout, it["account_id"], it["planned_date"], it["visit_id"], it["reference"]): it
             for it in items
         }
         for future in as_completed(futures):
