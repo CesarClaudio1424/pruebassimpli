@@ -70,6 +70,7 @@ def pagina_checkout_bat():
             "<strong>Buscar</strong> — Consulta el endpoint de referencia (3 requests en paralelo).",
             "<strong>Checkout</strong> — Envía el webhook de checkout por cada visita encontrada (3 en paralelo).",
         ],
+        tip="Si un reference tiene múltiples visitas, se enviará checkout para todas ellas.",
     )
 
     token = load_secret(
