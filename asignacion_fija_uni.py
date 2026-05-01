@@ -378,6 +378,11 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
         nota = str(df.iat[idx, RUTEO_COL_G_NOTA]).strip()
         data = lookup.get(nota) if nota else None
 
+        # Leer valores originales del archivo antes de sobreescribir
+        hora_i_orig = str(df.iat[idx, RUTEO_COL_D_HORA_INICIAL]).strip() if df.shape[1] > RUTEO_COL_D_HORA_INICIAL else ""
+        hora_f_orig = str(df.iat[idx, RUTEO_COL_E_HORA_FINAL]).strip() if df.shape[1] > RUTEO_COL_E_HORA_FINAL else ""
+        dur_orig = str(df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO]).strip() if df.shape[1] > RUTEO_COL_F_TIEMPO_SERVICIO else ""
+
         if data:
             matched += 1
             hora_i = data.get("hora_inicio") or "07:00"
@@ -395,24 +400,21 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
             df.iat[idx, RUTEO_COL_K_HABILIDADES] = hab_asignada
         else:
             unmatched += 1
-            hora_i = "07:00"
-            hora_f = "23:00"
-            dur = 7
-            df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = hora_i
-            df.iat[idx, RUTEO_COL_E_HORA_FINAL] = hora_f
-            df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = dur
+            df.iat[idx, RUTEO_COL_D_HORA_INICIAL] = "07:00"
+            df.iat[idx, RUTEO_COL_E_HORA_FINAL] = "23:00"
+            df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = 7
             df.iat[idx, RUTEO_COL_K_HABILIDADES] = "Fuera"
 
-        # Recolectar para ruteo_dia antes de limpiar Q/R
+        # Recolectar para ruteo_dia con los valores originales del archivo
         ref = str(df.iat[idx, RUTEO_COL_J_REFERENCE]).strip() if df.shape[1] > RUTEO_COL_J_REFERENCE else ""
         if ref and ref not in ("", "nan", "None"):
             carga_2 = str(df.iat[idx, RUTEO_COL_Q]).strip() if df.shape[1] > RUTEO_COL_Q else ""
             carga_3 = str(df.iat[idx, RUTEO_COL_R]).strip() if df.shape[1] > RUTEO_COL_R else ""
             ruteo_dia_filas.append({
                 "reference": ref,
-                "hora_inicio": str(hora_i),
-                "hora_final": str(hora_f),
-                "duracion": str(dur),
+                "hora_inicio": hora_i_orig if hora_i_orig not in ("", "nan", "None") else "07:00",
+                "hora_final": hora_f_orig if hora_f_orig not in ("", "nan", "None") else "23:00",
+                "duracion": dur_orig if dur_orig not in ("", "nan", "None") else "7",
                 "carga_2": carga_2 if carga_2 not in ("", "nan", "None") else None,
                 "carga_3": carga_3 if carga_3 not in ("", "nan", "None") else None,
             })
@@ -858,6 +860,7 @@ def _seccion_generar_ruteo():
             "<strong>F</strong> Tiempo Servicio, <strong>K</strong> Habilidades requeridas. "
             "Se vacian <strong>Q</strong> y <strong>R</strong>. "
             "Las columnas <strong>H</strong> y <strong>I</strong> (Latitud/Longitud) pasan intactas. "
+            "En Supabase se guardan los valores <strong>originales</strong> de D/E/F/Q/R del archivo subido. "
             "Match por columna <strong>G</strong> (Nota) vs <strong>cliente</strong> de Supabase. "
             "Sin match o sin habilidad disponible: habilidad = <strong>Fuera</strong>."
         )
