@@ -501,14 +501,14 @@ def _enviar_actualizaciones(token, visitas_put):
     def _put_lote(lote):
         r = _requests.put(
             "https://api.simpliroute.com/v1/routes/visits/",
-            json=lote, headers=headers, timeout=120,
+            json=lote, headers=headers, timeout=300,
         )
         return len(lote), r.status_code, r.text[:200]
 
     barra = st.progress(0, text=f"Enviando {len(visitas_put)} visitas en {total_bloques} bloques...")
     resultados = {}
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(_put_lote, lote): i for i, lote in enumerate(bloques)}
         completados = 0
         for future in as_completed(futures):
