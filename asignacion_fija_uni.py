@@ -339,7 +339,6 @@ RUTEO_COL_K_HABILIDADES = 10
 RUTEO_COL_Q = 16
 RUTEO_COL_R = 17
 
-PLAN_COL_N_REFERENCE = 13
 
 
 def _fetch_planeacion(supabase, clientes):
@@ -491,88 +490,60 @@ def _guardar_ruteo_dia(supabase, filas, agencia):
         st.warning(f"No se pudo guardar en {tabla}: {e}")
 
 
-def _get_visita_by_reference(token, reference):
-    url = f"https://api.simpliroute.com/v1/routes/visits/reference/{reference}/"
-    r = _requests.get(url, headers={"Authorization": f"Token {token}"}, timeout=30)
-    if r.status_code != 200:
-        return None, f"HTTP {r.status_code}"
-    data = r.json()
-    if isinstance(data, list):
-        return data, None
-    if isinstance(data, dict) and "results" in data:
-        return data["results"], None
-    if isinstance(data, dict) and "id" in data:
-        return [data], None
-    return [], None
+def _enviar_actualizaciones(token, visitas_put):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
-def _procesar_actualizar_simpli(token, references, lookup_ruteo):
-    barra = st.progress(0, text="Buscando visitas en SimpliRoute...")
-    total = len(references)
-    visitas_put = []
-    errores_get = []
-
-    for i, ref in enumerate(references):
-        barra.progress((i + 1) / total, text=f"Buscando {ref} ({i+1}/{total})...")
-        results, err = _get_visita_by_reference(token, ref)
-        if err:
-            errores_get.append(f"{ref}: {err}")
-            continue
-        if not results:
-            errores_get.append(f"{ref}: no encontrado")
-            continue
-        ruteo = lookup_ruteo[ref]
-        for v in results:
-            payload = {
-                "id": v["id"],
-                "reference": v.get("reference", ref),
-                "title": v.get("title", ""),
-                "address": v.get("address", ""),
-                "planned_date": v.get("planned_date", ""),
-                "route": v.get("route", ""),
-                "window_start": ruteo.get("hora_inicio") or "",
-                "window_end": ruteo.get("hora_final") or "",
-                "time_at_stop": _try_num(ruteo.get("duracion")),
-                "load_2": _try_num(ruteo.get("carga_2")),
-                "load_3": _try_num(ruteo.get("carga_3")),
-            }
-            visitas_put.append(payload)
-
-    barra.progress(1.0, text="Actualizando en SimpliRoute...")
-    ok = 0
-    errores_put = []
-    MAX_BLOCK = 500
+    MAX_BLOCK = 400
+    bloques = [visitas_put[i:i + MAX_BLOCK] for i in range(0, len(visitas_put), MAX_BLOCK)]
+    total_bloques = len(bloques)
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
-    for i in range(0, len(visitas_put), MAX_BLOCK):
-        lote = visitas_put[i:i + MAX_BLOCK]
-        try:
-            r = _requests.put(
-                "https://api.simpliroute.com/v1/routes/visits/",
-                json=lote, headers=headers, timeout=120,
-            )
-            if r.status_code in (200, 201, 204):
-                ok += len(lote)
-            else:
-                errores_put.append(f"Lote {i//MAX_BLOCK+1}: {r.status_code} — {r.text[:200]}")
-        except Exception as e:
-            errores_put.append(f"Lote {i//MAX_BLOCK+1}: {e}")
+
+    def _put_lote(lote):
+        r = _requests.put(
+            "https://api.simpliroute.com/v1/routes/visits/",
+            json=lote, headers=headers, timeout=120,
+        )
+        return len(lote), r.status_code, r.text[:200]
+
+    barra = st.progress(0, text=f"Enviando {len(visitas_put)} visitas en {total_bloques} bloques...")
+    resultados = {}
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(_put_lote, lote): i for i, lote in enumerate(bloques)}
+        completados = 0
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                n, status, text = future.result()
+                resultados[i] = (n, status, text)
+            except Exception as e:
+                resultados[i] = (len(bloques[i]), 0, str(e))
+            completados += 1
+            barra.progress(completados / total_bloques, text=f"Bloques completados: {completados}/{total_bloques}")
 
     barra.empty()
 
-    col1, col2, col3 = st.columns(3)
+    ok = sum(n for n, status, _ in resultados.values() if status in (200, 201, 204))
+    errores_put = [
+        f"Bloque {i + 1}: HTTP {status} — {text}"
+        for i, (n, status, text) in sorted(resultados.items())
+        if status not in (200, 201, 204)
+    ]
+
+    col1, col2 = st.columns(2)
     with col1:
         st.markdown(render_stat(ok, "Actualizados OK"), unsafe_allow_html=True)
     with col2:
-        st.markdown(render_stat(len(errores_get), "Sin encontrar"), unsafe_allow_html=True)
-    with col3:
-        st.markdown(render_stat(len(errores_put), "Errores PUT"), unsafe_allow_html=True)
-
-    for e in errores_get:
-        render_error_item(e)
+        if errores_put:
+            st.markdown(
+                render_stat(len(errores_put), "Bloques con error",
+                            style="background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);"),
+                unsafe_allow_html=True,
+            )
     for e in errores_put:
         render_error_item(e)
-    if not errores_get and not errores_put:
-        render_tip(f"Todos los registros actualizados correctamente.")
+    if not errores_put:
+        render_tip("Todos los registros actualizados correctamente.")
 
 
 def _try_num(val):
@@ -600,82 +571,112 @@ def _seccion_actualizar_datos_simpli():
         render_tip("Token no configurado en secrets.", warning=True)
         return
 
-    render_label("Archivo Plan SimpliRoute")
-    plan_file = st.file_uploader(
-        "Plan",
-        type=["xlsx", "xls"],
-        key="ads_plan",
+    render_label("Fecha de entrega")
+    fecha = st.date_input(
+        "Fecha",
+        value=date.today(),
+        key="ads_fecha",
+        format="DD/MM/YYYY",
         label_visibility="collapsed",
     )
-    if not plan_file:
+    fecha_str = fecha.strftime("%Y-%m-%d")
+
+    if st.button("Consultar visitas", use_container_width=True, key="ads_btn_consultar"):
+        st.session_state.pop("ads_visitas_put", None)
+        st.session_state.pop("ads_total_visitas", None)
+
+        loader = st.empty()
+        headers = {"Authorization": f"Token {token}"}
+
+        _render_loader(loader, "Consultando visitas en SimpliRoute...", fecha_str)
+        try:
+            r = _requests.get(
+                f"https://api.simpliroute.com/v1/routes/visits/?planned_date={fecha_str}",
+                headers=headers, timeout=60,
+            )
+            r.raise_for_status()
+            visitas = r.json()
+        except Exception as e:
+            loader.empty()
+            st.error(f"Error al consultar SimpliRoute: {e}")
+            return
+        loader.empty()
+
+        if not isinstance(visitas, list):
+            st.error(f"Respuesta inesperada de la API: {str(visitas)[:200]}")
+            return
+
+        referencias_visitas = [v.get("reference", "") for v in visitas if v.get("reference")]
+
+        supabase = _get_supabase_client()
+        lookup_ruteo = {}
+        for i in range(0, len(referencias_visitas), 500):
+            lote = referencias_visitas[i:i + 500]
+            try:
+                resp = supabase.table(_tabla_ruteo_dia(cuenta)).select(
+                    "reference,hora_inicio,hora_final,duracion,carga_2,carga_3"
+                ).in_("reference", lote).execute()
+                for row in resp.data or []:
+                    lookup_ruteo[row["reference"]] = row
+            except Exception as e:
+                st.warning(f"Error consultando tabla de ruteo: {e}")
+
+        visitas_put = []
+        for v in visitas:
+            ref = v.get("reference", "")
+            if not ref or ref not in lookup_ruteo:
+                continue
+            ruteo = lookup_ruteo[ref]
+            visitas_put.append({
+                "id": v["id"],
+                "reference": ref,
+                "title": v.get("title", ""),
+                "address": v.get("address", ""),
+                "planned_date": v.get("planned_date", ""),
+                "route": v.get("route", ""),
+                "window_start": ruteo.get("hora_inicio") or "",
+                "window_end": ruteo.get("hora_final") or "",
+                "time_at_stop": _try_num(ruteo.get("duracion")),
+                "load_2": _try_num(ruteo.get("carga_2")),
+                "load_3": _try_num(ruteo.get("carga_3")),
+            })
+
+        st.session_state["ads_visitas_put"] = visitas_put
+        st.session_state["ads_total_visitas"] = len(visitas)
+
+    if "ads_visitas_put" not in st.session_state:
         render_tip(
-            "Sube el archivo Plan de SimpliRoute exportado desde la plataforma. "
-            "Se toma el <strong>reference</strong> de la columna <strong>N</strong>. "
+            "Ingresa la fecha de entrega y pulsa <strong>Consultar visitas</strong>. "
             "Los valores de ventana y carga provienen del último archivo procesado en "
             "<em>Generar archivo de ruteo</em>."
         )
         return
 
-    try:
-        df_plan = pd.read_excel(plan_file, dtype=str, header=0).fillna("")
-    except Exception as e:
-        st.error(f"Error al leer el archivo: {e}")
-        return
+    total_visitas = st.session_state["ads_total_visitas"]
+    visitas_put = st.session_state["ads_visitas_put"]
+    sin_datos = total_visitas - len(visitas_put)
 
-    if df_plan.shape[1] <= PLAN_COL_N_REFERENCE:
-        st.error("El archivo no tiene suficientes columnas (se esperaba al menos hasta la N).")
-        return
-
-    references = [
-        v for v in (str(x).strip() for x in df_plan.iloc[:, PLAN_COL_N_REFERENCE])
-        if v and v not in ("nan", "None", "")
-    ]
-    references = list(dict.fromkeys(references))
-
-    if not references:
-        st.error("No se encontraron references en la columna N.")
-        return
-
-    st.markdown(render_stat(len(references), "References en el Plan"), unsafe_allow_html=True)
-
-    supabase = _get_supabase_client()
-    lookup_ruteo = {}
-    for i in range(0, len(references), 500):
-        lote = references[i:i + 500]
-        try:
-            resp = supabase.table(_tabla_ruteo_dia(cuenta)).select(
-                "reference,hora_inicio,hora_final,duracion,carga_2,carga_3"
-            ).in_("reference", lote).execute()
-            for row in resp.data or []:
-                lookup_ruteo[row["reference"]] = row
-        except Exception as e:
-            st.warning(f"Error consultando tabla de ruteo: {e}")
-
-    encontrados = [r for r in references if r in lookup_ruteo]
-    sin_datos = len(references) - len(encontrados)
-
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown(render_stat(len(encontrados), "Con datos de ruteo"), unsafe_allow_html=True)
+        st.markdown(render_stat(total_visitas, "Visitas en la fecha"), unsafe_allow_html=True)
     with col2:
+        st.markdown(render_stat(len(visitas_put), "Con datos de ruteo"), unsafe_allow_html=True)
+    with col3:
         st.markdown(render_stat(sin_datos, "Sin datos de ruteo"), unsafe_allow_html=True)
 
-    if not encontrados:
+    if not visitas_put:
         render_tip(
-            "Ningún reference encontrado en la tabla de ruteo. "
+            "Ninguna visita tiene datos en la tabla de ruteo. "
             "Primero genera el archivo de ruteo en la tab <em>Generar archivo de ruteo</em>.",
             warning=True,
         )
         return
 
     if sin_datos:
-        render_tip(
-            f"{sin_datos} references no tienen datos de ruteo y serán omitidos.",
-            warning=True,
-        )
+        render_tip(f"{sin_datos} visitas no tienen datos en ruteo y serán omitidas.", warning=True)
 
-    if st.button("Actualizar en SimpliRoute", type="primary", use_container_width=True):
-        _procesar_actualizar_simpli(token, encontrados, lookup_ruteo)
+    if st.button("Actualizar en SimpliRoute", type="primary", use_container_width=True, key="ads_btn_actualizar"):
+        _enviar_actualizaciones(token, visitas_put)
 
 
 _VEHICLE_PATTERN = re.compile(r'^R(\d+)-MX\d+$')
