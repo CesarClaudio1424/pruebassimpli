@@ -491,35 +491,25 @@ def _guardar_ruteo_dia(supabase, filas, agencia):
 
 
 def _enviar_actualizaciones(token, visitas_put):
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    MAX_BLOCK = 400
+    MAX_BLOCK = 100
     bloques = [visitas_put[i:i + MAX_BLOCK] for i in range(0, len(visitas_put), MAX_BLOCK)]
     total_bloques = len(bloques)
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
 
-    def _put_lote(lote):
-        r = _requests.put(
-            "https://api.simpliroute.com/v1/routes/visits/",
-            json=lote, headers=headers, timeout=300,
-        )
-        return len(lote), r.status_code, r.text[:200]
-
     barra = st.progress(0, text=f"Enviando {len(visitas_put)} visitas en {total_bloques} bloques...")
     resultados = {}
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {executor.submit(_put_lote, lote): i for i, lote in enumerate(bloques)}
-        completados = 0
-        for future in as_completed(futures):
-            i = futures[future]
-            try:
-                n, status, text = future.result()
-                resultados[i] = (n, status, text)
-            except Exception as e:
-                resultados[i] = (len(bloques[i]), 0, str(e))
-            completados += 1
-            barra.progress(completados / total_bloques, text=f"Bloques completados: {completados}/{total_bloques}")
+    for i, lote in enumerate(bloques):
+        try:
+            r = _requests.put(
+                "https://api.simpliroute.com/v1/routes/visits/",
+                json=lote, headers=headers, timeout=300,
+            )
+            resultados[i] = (len(lote), r.status_code, r.text[:200])
+        except Exception as e:
+            resultados[i] = (len(lote), 0, str(e))
+        completados = i + 1
+        barra.progress(completados / total_bloques, text=f"Bloques completados: {completados}/{total_bloques}")
 
     barra.empty()
 
