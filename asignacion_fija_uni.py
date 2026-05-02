@@ -631,8 +631,11 @@ def _seccion_actualizar_datos_simpli():
                 "window_start": ruteo.get("hora_inicio") or "",
                 "window_end": ruteo.get("hora_final") or "",
             }
+            dur_min = _try_num(ruteo.get("duracion"))
+            if dur_min is not None:
+                m = int(dur_min)
+                item["duration"] = f"{m // 60:02d}:{m % 60:02d}:00"
             for campo_api, campo_ruteo in (
-                ("time_at_stop", "duracion"),
                 ("load_2", "carga_2"),
                 ("load_3", "carga_3"),
             ):
