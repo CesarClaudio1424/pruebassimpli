@@ -713,86 +713,6 @@ def _sr_headers(token):
     return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
 
 
-def _crear_skills_faltantes(skills_necesarios, agencia):
-    token_key = "token_tlahuac" if agencia == "Tláhuac" else "token_monterrey"
-    try:
-        token = st.secrets["cuentas_unilever"][token_key].strip()
-    except (KeyError, FileNotFoundError):
-        st.error(f"Falta {token_key} en [cuentas_unilever] en secrets.")
-        return
-
-    loader = st.empty()
-    _render_loader(loader, "Consultando skills existentes...", agencia)
-    try:
-        r = _requests.get(
-            "https://api.simpliroute.com/v1/routes/skills/",
-            headers=_sr_headers(token), timeout=_SR_TIMEOUT,
-        )
-        r.raise_for_status()
-        skills_raw = r.json()
-    except Exception as e:
-        loader.empty()
-        st.error(f"Error al consultar skills: {e}")
-        return
-
-    existentes = {s["skill"] for s in skills_raw}
-    faltantes = [s for s in skills_necesarios if s not in existentes]
-    ya_existian = len(skills_necesarios) - len(faltantes)
-    loader.empty()
-
-    if not faltantes:
-        render_tip(
-            f"Todos los skills ya existen en <strong>{agencia}</strong> "
-            f"({len(skills_necesarios)} verificados)."
-        )
-        return
-
-    total = len(faltantes)
-    barra, contador, contenedor_errores = create_progress_tracker(total, "Creando skills...")
-
-    creados = 0
-    errores = 0
-    for i, skill_name in enumerate(faltantes):
-        try:
-            r = _requests.post(
-                "https://api.simpliroute.com/v1/routes/skills/",
-                headers=_sr_headers(token),
-                json={"skill": skill_name},
-                timeout=_SR_TIMEOUT,
-            )
-            if 200 <= r.status_code < 300:
-                creados += 1
-            else:
-                with contenedor_errores:
-                    render_error_item(f"{skill_name} — HTTP {r.status_code}: {r.text[:150]}")
-                errores += 1
-        except Exception as e:
-            with contenedor_errores:
-                render_error_item(f"{skill_name} — {e}")
-            errores += 1
-        update_progress(barra, contador, i + 1, total)
-
-    finish_progress(barra)
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown(render_stat(creados, "Skills creados"), unsafe_allow_html=True)
-    with col2:
-        st.markdown(render_stat(ya_existian, "Ya existían"), unsafe_allow_html=True)
-    with col3:
-        if errores:
-            st.markdown(
-                render_stat(errores, "Errores",
-                            style="background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);"),
-                unsafe_allow_html=True,
-            )
-
-    if errores:
-        render_tip(f"Hubo {errores} skills con error.", warning=True)
-    else:
-        render_tip(f"Skills sincronizados correctamente en <strong>{agencia}</strong>.")
-
-
 def _actualizar_skills_sr(nums_activos, agencia):
     token_key = "token_tlahuac" if agencia == "Tláhuac" else "token_monterrey"
     try:
@@ -948,17 +868,6 @@ def _seccion_generar_ruteo():
             if m:
                 nums_activos.add(m.group(1))
         habilidades_disponibles = {f"F{n}" for n in nums_activos}
-
-        if st.button("Crear habilidades en SimpliRoute (setup inicial)", key="agr_btn_crear_skills_mty"):
-            skills_completos = (
-                [
-                    f"F{m.group(1)}"
-                    for v in (RUTAS_MONTERREY + ESPECIALES_MONTERREY)
-                    if (m := _VEHICLE_PATTERN.match(v))
-                ]
-                + ["Fuera"]
-            )
-            _crear_skills_faltantes(skills_completos, agencia="Monterrey")
 
         if vehiculos_seleccionados:
             render_tip(
