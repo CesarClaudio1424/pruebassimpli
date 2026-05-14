@@ -54,6 +54,18 @@ HORA_FINAL_FIJA = "23:00"
 DURACION_FIJA = 7
 UPSERT_BATCH_SIZE = 500
 
+RUTAS_MONTERREY = [
+    "R20081-MX01", "R20082-MX01", "R20083-MX01", "R20312-MX01", "R20338-MX01",
+    "R20340-MX01", "R20342-MX01", "R20343-MX01", "R20345-MX01", "R20348-MX01",
+    "R20351-MX01", "R20352-MX01", "R20353-MX01", "R20355-MX01", "R20361-MX01",
+    "R20362-MX01", "R20363-MX01", "R20364-MX01", "R20378-MX01", "R20384-MX01",
+    "R21218-MX01",
+]
+ESPECIALES_MONTERREY = [
+    "R1001FM-MX01",
+    "R1001EV-MX01",
+]
+
 
 def _col_letter_to_index(letter):
     letter = letter.upper()
@@ -682,7 +694,7 @@ def _seccion_actualizar_datos_simpli():
         _enviar_actualizaciones(token, visitas_put)
 
 
-_VEHICLE_PATTERN = re.compile(r'^R(\d+)-MX\d+$')
+_VEHICLE_PATTERN = re.compile(r'^R(\d+[A-Z]*)-MX\d+$')
 _SR_TIMEOUT = 30
 
 
@@ -701,11 +713,92 @@ def _sr_headers(token):
     return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
 
 
-def _actualizar_skills_tlahuac(nums_activos):
+def _crear_skills_faltantes(skills_necesarios, agencia):
+    token_key = "token_tlahuac" if agencia == "Tláhuac" else "token_monterrey"
     try:
-        token = st.secrets["cuentas_unilever"]["token_tlahuac"].strip()
+        token = st.secrets["cuentas_unilever"][token_key].strip()
     except (KeyError, FileNotFoundError):
-        st.error("Falta token_tlahuac en [cuentas_unilever] en secrets.")
+        st.error(f"Falta {token_key} en [cuentas_unilever] en secrets.")
+        return
+
+    loader = st.empty()
+    _render_loader(loader, "Consultando skills existentes...", agencia)
+    try:
+        r = _requests.get(
+            "https://api.simpliroute.com/v1/routes/skills/",
+            headers=_sr_headers(token), timeout=_SR_TIMEOUT,
+        )
+        r.raise_for_status()
+        skills_raw = r.json()
+    except Exception as e:
+        loader.empty()
+        st.error(f"Error al consultar skills: {e}")
+        return
+
+    existentes = {s["skill"] for s in skills_raw}
+    faltantes = [s for s in skills_necesarios if s not in existentes]
+    ya_existian = len(skills_necesarios) - len(faltantes)
+    loader.empty()
+
+    if not faltantes:
+        render_tip(
+            f"Todos los skills ya existen en <strong>{agencia}</strong> "
+            f"({len(skills_necesarios)} verificados)."
+        )
+        return
+
+    total = len(faltantes)
+    barra, contador, contenedor_errores = create_progress_tracker(total, "Creando skills...")
+
+    creados = 0
+    errores = 0
+    for i, skill_name in enumerate(faltantes):
+        try:
+            r = _requests.post(
+                "https://api.simpliroute.com/v1/routes/skills/",
+                headers=_sr_headers(token),
+                json={"skill": skill_name},
+                timeout=_SR_TIMEOUT,
+            )
+            if 200 <= r.status_code < 300:
+                creados += 1
+            else:
+                with contenedor_errores:
+                    render_error_item(f"{skill_name} — HTTP {r.status_code}: {r.text[:150]}")
+                errores += 1
+        except Exception as e:
+            with contenedor_errores:
+                render_error_item(f"{skill_name} — {e}")
+            errores += 1
+        update_progress(barra, contador, i + 1, total)
+
+    finish_progress(barra)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(render_stat(creados, "Skills creados"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(ya_existian, "Ya existían"), unsafe_allow_html=True)
+    with col3:
+        if errores:
+            st.markdown(
+                render_stat(errores, "Errores",
+                            style="background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);"),
+                unsafe_allow_html=True,
+            )
+
+    if errores:
+        render_tip(f"Hubo {errores} skills con error.", warning=True)
+    else:
+        render_tip(f"Skills sincronizados correctamente en <strong>{agencia}</strong>.")
+
+
+def _actualizar_skills_sr(nums_activos, agencia):
+    token_key = "token_tlahuac" if agencia == "Tláhuac" else "token_monterrey"
+    try:
+        token = st.secrets["cuentas_unilever"][token_key].strip()
+    except (KeyError, FileNotFoundError):
+        st.error(f"Falta {token_key} en [cuentas_unilever] en secrets.")
         return
 
     loader = st.empty()
@@ -822,31 +915,61 @@ def _seccion_generar_ruteo():
                 + " — los demás quedarán con <strong>Fuera</strong>."
             )
             if st.button("Actualizar skills en SimpliRoute", key="agr_btn_sr"):
-                _actualizar_skills_tlahuac(nums_activos)
+                _actualizar_skills_sr(nums_activos, agencia="Tláhuac")
     else:
         col_a, col_b = st.columns(2)
         with col_a:
-            render_label("Cuántas rutas")
+            render_label(f"Cuántas rutas (max {len(RUTAS_MONTERREY)})")
             n_rutas = st.number_input(
                 "Rutas",
-                min_value=1,
-                max_value=99,
-                value=5,
+                min_value=0,
+                max_value=len(RUTAS_MONTERREY),
+                value=min(5, len(RUTAS_MONTERREY)),
                 key="agr_n_rutas",
                 label_visibility="collapsed",
             )
         with col_b:
-            render_label("Cuentas especiales")
-            especiales_txt = st.text_area(
+            render_label(f"Cuántas especiales (max {len(ESPECIALES_MONTERREY)})")
+            n_especiales = st.number_input(
                 "Especiales",
-                placeholder="Una por línea",
-                key="agr_especiales",
+                min_value=0,
+                max_value=len(ESPECIALES_MONTERREY),
+                value=0,
+                key="agr_n_especiales",
                 label_visibility="collapsed",
-                height=80,
             )
-        rutas = [str(i) for i in range(1, int(n_rutas) + 1)]
-        especiales = [e.strip() for e in especiales_txt.splitlines() if e.strip()]
-        habilidades_disponibles = set(rutas + especiales)
+
+        vehiculos_seleccionados = (
+            RUTAS_MONTERREY[:int(n_rutas)] + ESPECIALES_MONTERREY[:int(n_especiales)]
+        )
+        nums_activos = set()
+        for v in vehiculos_seleccionados:
+            m = _VEHICLE_PATTERN.match(v)
+            if m:
+                nums_activos.add(m.group(1))
+        habilidades_disponibles = {f"F{n}" for n in nums_activos}
+
+        if st.button("Crear habilidades en SimpliRoute (setup inicial)", key="agr_btn_crear_skills_mty"):
+            skills_completos = (
+                [
+                    f"F{m.group(1)}"
+                    for v in (RUTAS_MONTERREY + ESPECIALES_MONTERREY)
+                    if (m := _VEHICLE_PATTERN.match(v))
+                ]
+                + ["Fuera"]
+            )
+            _crear_skills_faltantes(skills_completos, agencia="Monterrey")
+
+        if vehiculos_seleccionados:
+            render_tip(
+                f"<strong>{len(vehiculos_seleccionados)}</strong> vehículos activos: "
+                + ", ".join(f"<code>{v}</code>" for v in vehiculos_seleccionados)
+                + " — habilidades: "
+                + ", ".join(f"<code>{h}</code>" for h in sorted(habilidades_disponibles))
+                + " — los demás quedarán con <strong>Fuera</strong>."
+            )
+            if st.button("Actualizar skills en SimpliRoute", key="agr_btn_sr_mty"):
+                _actualizar_skills_sr(nums_activos, agencia="Monterrey")
 
     st.markdown("---")
 
