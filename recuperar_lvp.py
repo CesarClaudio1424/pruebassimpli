@@ -472,19 +472,50 @@ def pagina_recuperar_lvp():
         for v in _visitas_resueltas(idx, r)
     ]
     total = len(visitas_a_procesar)
-    exitosos = 0
-    barra, contador, contenedor_errores = create_progress_tracker(total, "Asignando visitas...")
 
-    for i, (r, visita) in enumerate(visitas_a_procesar):
+    # Paso 1: enriquecer cada visita seleccionada con GET por ID (en paralelo)
+    enrich_barra = st.progress(0, text="Obteniendo datos completos de las visitas...")
+    contenedor_errores_enrich = st.container()
+    visitas_enriquecidas = []
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {
+            ex.submit(obtener_visita_completa, v["id"], token): (i, r, v)
+            for i, (r, v) in enumerate(visitas_a_procesar)
+        }
+        completadas = 0
+        for fut in as_completed(futures):
+            i, r, v_orig = futures[fut]
+            full = fut.result()
+            if full and full.get("title") and full.get("address"):
+                visitas_enriquecidas.append((r, full))
+            else:
+                with contenedor_errores_enrich:
+                    render_error_item(
+                        f"Ref {r['reference']} (ID {v_orig.get('id')}) — No se pudo obtener title/address con GET /routes/visits/{{id}}"
+                    )
+            completadas += 1
+            enrich_barra.progress(completadas / total, text=f"Obteniendo datos... {completadas}/{total}")
+    enrich_barra.empty()
+
+    if not visitas_enriquecidas:
+        st.error("No se pudo enriquecer ninguna visita. Revisa los errores arriba.")
+        st.stop()
+
+    # Paso 2: PUT por cada visita enriquecida
+    exitosos = 0
+    barra, contador, contenedor_errores = create_progress_tracker(len(visitas_enriquecidas), "Asignando visitas...")
+
+    for i, (r, visita) in enumerate(visitas_enriquecidas):
         status, resp_text = asignar_visita(visita, r["route_id"], r["fecha_str"], token)
         if 200 <= status < 300:
             exitosos += 1
         else:
             with contenedor_errores:
                 render_error_item(f"Ref {r['reference']} (ID {visita.get('id')}) — Error al asignar (HTTP {status}): {resp_text}")
-        update_progress(barra, contador, i + 1, total)
+        update_progress(barra, contador, i + 1, len(visitas_enriquecidas))
 
     finish_progress(barra)
+    total = len(visitas_enriquecidas)
 
     if exitosos > 0:
         st.success(f"{exitosos} de {total} visitas asignadas correctamente")
