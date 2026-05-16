@@ -127,13 +127,21 @@ def obtener_ruta_id(vehiculo_nombre, fecha_str, token):
     return None, info
 
 
-def asignar_visita(visit_id, route_id, planned_date, token):
-    url = f"{API_BASE}/routes/visits/{visit_id}"
+def asignar_visita(visita, route_id, planned_date, token):
+    url = f"{API_BASE}/routes/visits/{visita['id']}"
+    payload = {
+        "id": visita["id"],
+        "title": visita.get("title", ""),
+        "address": visita.get("address", ""),
+        "reference": visita.get("reference", ""),
+        "route": route_id,
+        "planned_date": planned_date,
+    }
     try:
         r = requests.put(
             url,
             headers=_headers(token),
-            json={"route": route_id, "planned_date": planned_date},
+            json=payload,
             timeout=REQUEST_TIMEOUT,
         )
         return r.status_code, r.text
@@ -515,7 +523,7 @@ def pagina_recuperar_lvp():
     barra, contador, contenedor_errores = create_progress_tracker(total, "Asignando visitas...")
 
     for i, (r, visita) in enumerate(visitas_a_procesar):
-        status, resp_text = asignar_visita(visita["id"], r["route_id"], r["fecha_str"], token)
+        status, resp_text = asignar_visita(visita, r["route_id"], r["fecha_str"], token)
         if 200 <= status < 300:
             exitosos += 1
         else:
