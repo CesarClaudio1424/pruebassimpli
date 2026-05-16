@@ -128,12 +128,18 @@ def obtener_ruta_id(vehiculo_nombre, fecha_str, token):
 
 
 def asignar_visita(visita, route_id, planned_date, token):
+    # Si la visita viene stripped (sin title/address), enriquecer con GET antes del PUT
+    if not visita.get("title") or not visita.get("address"):
+        full = obtener_visita_completa(visita["id"], token)
+        if full:
+            visita = full
+
     url = f"{API_BASE}/routes/visits/{visita['id']}"
     payload = {
         "id": visita["id"],
-        "title": visita.get("title", ""),
-        "address": visita.get("address", ""),
-        "reference": visita.get("reference", ""),
+        "title": visita.get("title") or "",
+        "address": visita.get("address") or "",
+        "reference": visita.get("reference") or "",
         "route": route_id,
         "planned_date": planned_date,
     }
