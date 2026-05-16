@@ -96,7 +96,7 @@ def asignar_visita(visita, route_id, planned_date, token):
 
     # Si todavia no tenemos title/address, abortar con mensaje claro
     if not visita.get("title") or not visita.get("address"):
-        return 0, f"No se pudo obtener title/address de la visita {visita['id']} (GET de enriquecimiento sin datos)"
+        return 0, f"No se pudo obtener title/address de la visita {visita['id']} (GET de enriquecimiento sin datos)", None
 
     url = f"{API_BASE}/routes/visits/{visita['id']}"
     payload = {
@@ -114,9 +114,9 @@ def asignar_visita(visita, route_id, planned_date, token):
             json=payload,
             timeout=REQUEST_TIMEOUT,
         )
-        return r.status_code, r.text
+        return r.status_code, r.text, {"url": url, "payload": payload}
     except requests.exceptions.RequestException as e:
-        return 0, str(e)
+        return 0, str(e), {"url": url, "payload": payload}
 
 
 def _visitas_resueltas(idx, r):
@@ -506,12 +506,16 @@ def pagina_recuperar_lvp():
     barra, contador, contenedor_errores = create_progress_tracker(len(visitas_enriquecidas), "Asignando visitas...")
 
     for i, (r, visita) in enumerate(visitas_enriquecidas):
-        status, resp_text = asignar_visita(visita, r["route_id"], r["fecha_str"], token)
+        status, resp_text, req_info = asignar_visita(visita, r["route_id"], r["fecha_str"], token)
         if 200 <= status < 300:
             exitosos += 1
         else:
             with contenedor_errores:
                 render_error_item(f"Ref {r['reference']} (ID {visita.get('id')}) — Error al asignar (HTTP {status}): {resp_text}")
+                if req_info:
+                    with st.expander(f"Ver request enviado (ID {visita.get('id')})"):
+                        st.code(f"PUT {req_info['url']}", language="bash")
+                        st.json(req_info["payload"])
         update_progress(barra, contador, i + 1, len(visitas_enriquecidas))
 
     finish_progress(barra)
