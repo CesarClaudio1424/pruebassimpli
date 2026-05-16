@@ -141,13 +141,17 @@ def asignar_visita(visit_id, route_id, planned_date, token):
         return 0, str(e)
 
 
-def _visita_resuelta(idx, r):
-    """Returns the resolved visita for a result row, considering user disambiguation."""
+def _visitas_resueltas(idx, r):
+    """Returns list of resolved visitas for a row (1 from auto-select, 1+ from manual multi-select)."""
     if r["visita"]:
-        return r["visita"]
+        return [r["visita"]]
     if r["necesita_seleccion"]:
-        return st.session_state.get("recuperar_selecciones", {}).get(idx)
-    return None
+        sel = st.session_state.get("recuperar_selecciones", {}).get(idx)
+        if isinstance(sel, list):
+            return sel
+        if sel:
+            return [sel]
+    return []
 
 
 def pagina_recuperar_lvp():
@@ -322,23 +326,24 @@ def pagina_recuperar_lvp():
 
     listos = [
         (i, r) for i, r in enumerate(resultados)
-        if _visita_resuelta(i, r) is not None and r["route_id"]
+        if _visitas_resueltas(i, r) and r["route_id"]
     ]
     sin_visita = [r for r in resultados if not r["visitas_candidatas"]]
     sin_ruta = [
         (i, r) for i, r in enumerate(resultados)
-        if _visita_resuelta(i, r) is not None and not r["route_id"]
+        if _visitas_resueltas(i, r) and not r["route_id"]
     ]
     pendientes = [
         (i, r) for i, r in enumerate(resultados)
-        if r["necesita_seleccion"] and i not in selecciones
+        if r["necesita_seleccion"] and not _visitas_resueltas(i, r)
     ]
+    total_visitas_listas = sum(len(_visitas_resueltas(i, r)) for i, r in listos)
 
     render_label("Resultados de busqueda")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown(render_stat(len(listos), "listos para procesar"), unsafe_allow_html=True)
+        st.markdown(render_stat(total_visitas_listas, "listos para procesar"), unsafe_allow_html=True)
     with col2:
         st.markdown(
             render_stat(
@@ -369,20 +374,25 @@ def pagina_recuperar_lvp():
 
     for idx, r in enumerate(resultados):
         candidatas = r["visitas_candidatas"]
-        visita_actual = _visita_resuelta(idx, r)
+        visitas_actuales = _visitas_resueltas(idx, r)
 
         if r["necesita_seleccion"]:
-            ya_seleccionada = selecciones.get(idx)
-            if ya_seleccionada:
+            sel_actual = selecciones.get(idx) or []
+            if isinstance(sel_actual, dict):
+                sel_actual = [sel_actual]
+            if sel_actual:
                 icon = "✓"
-                titulo_estado = f"visita seleccionada (ID {ya_seleccionada['id']})"
+                if len(sel_actual) == 1:
+                    titulo_estado = f"visita seleccionada (ID {sel_actual[0]['id']})"
+                else:
+                    titulo_estado = f"{len(sel_actual)} visitas seleccionadas"
             else:
                 icon = "?"
                 titulo_estado = f"selecciona entre {len(candidatas)} visitas encontradas"
 
             label_expander = f"{icon} Ref {r['reference']} · {r['vehiculo']} · {r['fecha_display']} — {titulo_estado}"
-            with st.expander(label_expander, expanded=not ya_seleccionada):
-                st.markdown(f"Se encontraron **{len(candidatas)}** visitas con esta referencia. Selecciona la correcta:")
+            with st.expander(label_expander, expanded=not sel_actual):
+                st.markdown(f"Se encontraron **{len(candidatas)}** visitas con esta referencia. Selecciona una o varias:")
 
                 df_sel = pd.DataFrame([
                     {
@@ -398,13 +408,15 @@ def pagina_recuperar_lvp():
                 event = st.dataframe(
                     df_sel,
                     on_select="rerun",
-                    selection_mode="single-row",
+                    selection_mode="multi-row",
                     use_container_width=True,
                     key=f"disamb_{idx}",
                     hide_index=True,
                 )
                 if event.selection.rows:
-                    selecciones[idx] = candidatas[event.selection.rows[0]]
+                    selecciones[idx] = [candidatas[r] for r in event.selection.rows]
+                elif idx in selecciones:
+                    del selecciones[idx]
 
                 if st.checkbox("Ver detalles de todas las candidatas", key=f"disamb_detail_{idx}"):
                     with st.container(border=True):
@@ -434,17 +446,18 @@ def pagina_recuperar_lvp():
                         st.json(req_ref["response"])
 
         else:
-            if visita_actual and r["route_id"]:
+            tiene_visita = bool(visitas_actuales)
+            if tiene_visita and r["route_id"]:
                 icon = "✓"
                 titulo_estado = "lista"
-            elif visita_actual:
+            elif tiene_visita:
                 icon = "⚠"
                 titulo_estado = "visita ok / sin ruta"
             else:
                 icon = "✗"
                 titulo_estado = "no encontrada"
 
-            has_error = visita_actual is None or not r["route_id"]
+            has_error = not tiene_visita or not r["route_id"]
             label_expander = f"{icon} Ref {r['reference']} · {r['vehiculo']} · {r['fecha_display']} — {titulo_estado}"
 
             with st.expander(label_expander, expanded=has_error):
@@ -489,21 +502,25 @@ def pagina_recuperar_lvp():
     st.markdown("---")
 
     # --- Boton Procesar ---
-    if not st.button(f"Procesar {len(listos)} visita(s)", type="primary", key="btn_procesar"):
+    if not st.button(f"Procesar {total_visitas_listas} visita(s)", type="primary", key="btn_procesar"):
         st.stop()
 
-    total = len(listos)
+    visitas_a_procesar = [
+        (r, v)
+        for idx, r in listos
+        for v in _visitas_resueltas(idx, r)
+    ]
+    total = len(visitas_a_procesar)
     exitosos = 0
     barra, contador, contenedor_errores = create_progress_tracker(total, "Asignando visitas...")
 
-    for i, (idx, r) in enumerate(listos):
-        visita = _visita_resuelta(idx, r)
+    for i, (r, visita) in enumerate(visitas_a_procesar):
         status, resp_text = asignar_visita(visita["id"], r["route_id"], r["fecha_str"], token)
         if 200 <= status < 300:
             exitosos += 1
         else:
             with contenedor_errores:
-                render_error_item(f"Ref {r['reference']} — Error al asignar (HTTP {status}): {resp_text}")
+                render_error_item(f"Ref {r['reference']} (ID {visita.get('id')}) — Error al asignar (HTTP {status}): {resp_text}")
         update_progress(barra, contador, i + 1, total)
 
     finish_progress(barra)
