@@ -356,7 +356,11 @@ def pagina_recuperar_lvp():
                 st.markdown(f"Se encontraron **{len(candidatas)}** visitas con esta referencia. Selecciona la correcta:")
 
                 df_sel = pd.DataFrame([
-                    {"ID": v.get("id"), "Reference": str(v.get("reference", ""))}
+                    {
+                        "ID": v.get("id"),
+                        "Reference": str(v.get("reference", "")),
+                        "Fecha": v.get("planned_date", ""),
+                    }
                     for v in candidatas
                 ])
                 event = st.dataframe(
