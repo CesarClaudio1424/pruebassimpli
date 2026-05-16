@@ -53,6 +53,21 @@ def buscar_por_reference(reference, token):
     return [], info
 
 
+def obtener_visita_completa(visit_id, token):
+    """GET /v1/routes/visits/{id} - devuelve la visita con todos sus campos (items, reference, etc)."""
+    try:
+        r = requests.get(
+            f"{API_BASE}/routes/visits/{visit_id}",
+            headers=_headers(token),
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code == 200:
+            return r.json()
+    except requests.exceptions.RequestException:
+        pass
+    return None
+
+
 def _buscar_en_fecha(fecha_str, reference, token):
     url = f"{API_BASE}/routes/visits/?planned_date={fecha_str}"
     try:
@@ -255,6 +270,20 @@ def pagina_recuperar_lvp():
                     barra_buscar.progress((i + 0.6) / total_busqueda, text=f"Fallback fechas {reference}...")
                     visita_fb, req_fallback = buscar_por_fechas(reference, token)
                     candidatas = [visita_fb] if visita_fb else []
+
+                # Enriquecer cada candidata con GET /routes/visits/{id} para traer items[] y reference
+                if candidatas:
+                    barra_buscar.progress((i + 0.75) / total_busqueda, text=f"Enriqueciendo {len(candidatas)} candidata(s)...")
+                    with ThreadPoolExecutor(max_workers=5) as ex:
+                        futures = {
+                            ex.submit(obtener_visita_completa, c.get("id"), token): idx_c
+                            for idx_c, c in enumerate(candidatas) if c.get("id")
+                        }
+                        for fut in as_completed(futures):
+                            idx_c = futures[fut]
+                            full = fut.result()
+                            if full:
+                                candidatas[idx_c] = full
 
                 # Auto-selecciona si hay exactamente 1 resultado
                 visita = candidatas[0] if len(candidatas) == 1 else None
