@@ -51,17 +51,17 @@ def buscar_por_reference(reference, token):
 
 
 def obtener_visita_completa(visit_id, token):
-    """GET /v1/routes/visits/{id} - devuelve la visita con todos sus campos (items, reference, etc)."""
-    try:
-        r = requests.get(
-            f"{API_BASE}/routes/visits/{visit_id}",
-            headers=_headers(token),
-            timeout=REQUEST_TIMEOUT,
-        )
-        if r.status_code == 200:
-            return r.json()
-    except requests.exceptions.RequestException:
-        pass
+    """GET /v1/routes/visits/{id} - devuelve la visita con todos sus campos (items, reference, etc).
+    Prueba con y sin trailing slash; algunos endpoints DRF requieren slash final."""
+    for url in (f"{API_BASE}/routes/visits/{visit_id}/", f"{API_BASE}/routes/visits/{visit_id}"):
+        try:
+            r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
+            if r.status_code == 200:
+                data = r.json()
+                if data and data.get("title"):
+                    return data
+        except requests.exceptions.RequestException:
+            continue
     return None
 
 
@@ -93,6 +93,10 @@ def asignar_visita(visita, route_id, planned_date, token):
         full = obtener_visita_completa(visita["id"], token)
         if full:
             visita = full
+
+    # Si todavia no tenemos title/address, abortar con mensaje claro
+    if not visita.get("title") or not visita.get("address"):
+        return 0, f"No se pudo obtener title/address de la visita {visita['id']} (GET de enriquecimiento sin datos)"
 
     url = f"{API_BASE}/routes/visits/{visita['id']}"
     payload = {
