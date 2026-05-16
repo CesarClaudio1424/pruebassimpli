@@ -415,6 +415,8 @@ def pagina_recuperar_lvp():
                                 "Titulo": v.get("title", ""),
                                 "Fecha": v.get("planned_date", ""),
                                 "Status": v.get("status", ""),
+                                "Order": v.get("order", ""),
+                                "Route ID": v.get("route", ""),
                                 "SKU": ", ".join(
                                     str(i.get("reference", "")) for i in (v.get("items") or []) if i.get("reference")
                                 ),
