@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import API_BASE, REQUEST_TIMEOUT
 from utils import (
@@ -9,9 +9,6 @@ from utils import (
     render_error_item, render_cuenta_badge,
     create_progress_tracker, update_progress, finish_progress,
 )
-
-FALLBACK_DAYS = 30
-
 
 @st.cache_data
 def cargar_cuentas():
@@ -66,43 +63,6 @@ def obtener_visita_completa(visit_id, token):
     except requests.exceptions.RequestException:
         pass
     return None
-
-
-def _buscar_en_fecha(fecha_str, reference, token):
-    url = f"{API_BASE}/routes/visits/?planned_date={fecha_str}"
-    try:
-        r = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
-        if r.status_code == 200:
-            for v in (r.json() or []):
-                if str(v.get("reference", "")) == str(reference):
-                    return v, fecha_str
-    except requests.exceptions.RequestException:
-        pass
-    return None, fecha_str
-
-
-def buscar_por_fechas(reference, token):
-    """Returns (visita | None, fallback_info dict)."""
-    hoy = date.today()
-    fechas = [
-        (hoy + timedelta(days=d)).strftime("%Y-%m-%d")
-        for d in range(-FALLBACK_DAYS, FALLBACK_DAYS + 1)
-    ]
-    info = {"total_fechas": len(fechas), "fecha_encontrada": None, "url": None, "response": None}
-
-    executor = ThreadPoolExecutor(max_workers=10)
-    futures = {executor.submit(_buscar_en_fecha, f, reference, token): f for f in fechas}
-    resultado = None
-    for future in as_completed(futures):
-        visita, fecha_str = future.result()
-        if visita:
-            resultado = visita
-            info["fecha_encontrada"] = fecha_str
-            info["url"] = f"{API_BASE}/routes/visits/?planned_date={fecha_str}"
-            info["response"] = visita
-            break
-    executor.shutdown(wait=False)
-    return resultado, info
 
 
 def obtener_ruta_id(vehiculo_nombre, fecha_str, token):
@@ -178,7 +138,7 @@ def pagina_recuperar_lvp():
         steps=[
             "<strong>Selecciona la cuenta</strong> — Elige la tienda Liverpool donde buscar las visitas.",
             "<strong>Agrega filas</strong> — Referencia de la visita, nombre del vehiculo destino y fecha de la ruta.",
-            "<strong>Buscar</strong> — Se busca primero por referencia directa; si no aparece, se escanea un rango de ±30 dias en paralelo.",
+            "<strong>Buscar</strong> — Se busca por referencia directa contra la API.",
             "<strong>Procesar</strong> — Revisa los resultados y confirma la asignacion a la ruta.",
         ],
         tip="El nombre del vehiculo debe coincidir (sin importar mayusculas/minusculas) con el registrado en SimpliRoute.",
@@ -283,16 +243,11 @@ def pagina_recuperar_lvp():
                 # Ordenar de mas reciente a mas antigua (ID desc)
                 candidatas = sorted(candidatas, key=lambda v: v.get("id", 0), reverse=True)
 
-                req_fallback = None
-                if not candidatas:
-                    barra_buscar.progress((i + 0.6) / total_busqueda, text=f"Fallback fechas {reference}...")
-                    visita_fb, req_fallback = buscar_por_fechas(reference, token)
-                    candidatas = [visita_fb] if visita_fb else []
-
-                # Enriquecer cada candidata con GET /routes/visits/{id} para traer items[] y reference
-                if candidatas:
-                    barra_buscar.progress((i + 0.75) / total_busqueda, text=f"Enriqueciendo {len(candidatas)} candidata(s)...")
-                    with ThreadPoolExecutor(max_workers=5) as ex:
+                # Enriquecer solo cuando hay multiples candidatas (para mostrar reference/SKU en tabla de seleccion).
+                # En auto-select (1 candidata) no hace falta: asignar_visita ya enriquece defensivamente antes del PUT.
+                if len(candidatas) > 1:
+                    barra_buscar.progress((i + 0.75) / total_busqueda, text=f"Enriqueciendo {len(candidatas)} candidatas...")
+                    with ThreadPoolExecutor(max_workers=10) as ex:
                         futures = {
                             ex.submit(obtener_visita_completa, c.get("id"), token): idx_c
                             for idx_c, c in enumerate(candidatas) if c.get("id")
@@ -320,7 +275,6 @@ def pagina_recuperar_lvp():
                     "necesita_seleccion": necesita_seleccion,
                     "route_id": route_id,
                     "req_ref": req_ref,
-                    "req_fallback": req_fallback,
                     "req_veh": req_veh,
                 })
                 barra_buscar.progress((i + 1) / total_busqueda, text=f"{i+1}/{total_busqueda} procesadas")
@@ -481,17 +435,6 @@ def pagina_recuperar_lvp():
                 st.code(f"GET {req_ref['url']}", language="bash")
                 st.markdown(f"Status: `{req_ref['status']}`")
                 st.json(req_ref["response"])
-
-                # --- Fallback por fechas ---
-                req_fb = r.get("req_fallback")
-                if req_fb is not None:
-                    st.markdown(f"**Fallback — escaneadas {req_fb['total_fechas']} fechas (±{FALLBACK_DAYS} dias):**")
-                    if req_fb["url"]:
-                        st.markdown(f"Encontrada el `{req_fb['fecha_encontrada']}`")
-                        st.code(f"GET {req_fb['url']}", language="bash")
-                        st.json(req_fb["response"])
-                    else:
-                        st.markdown("No encontrada en ninguna fecha del rango.")
 
                 # --- Busqueda de ruta ---
                 req_veh = r.get("req_veh")
