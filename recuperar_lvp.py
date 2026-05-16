@@ -98,7 +98,7 @@ def asignar_visita(visita, route_id, planned_date, token):
     if not visita.get("title") or not visita.get("address"):
         return 0, f"No se pudo obtener title/address de la visita {visita['id']} (GET de enriquecimiento sin datos)", None
 
-    url = f"{API_BASE}/routes/visits/{visita['id']}"
+    url = f"{API_BASE}/routes/visits/{visita['id']}/"
     payload = {
         "id": visita["id"],
         "title": visita.get("title") or "",
