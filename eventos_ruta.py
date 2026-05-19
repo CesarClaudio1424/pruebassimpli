@@ -9,7 +9,11 @@ from utils import (
 )
 
 ROUTE_WORKERS = 10
-EVENT_TYPE = "ROUTE_FINISHED"
+
+EVENT_CONFIG = {
+    "Iniciar": {"type": "ROUTE_STARTED", "hora": "00:00:00", "verbo": "iniciar"},
+    "Finalizar": {"type": "ROUTE_FINISHED", "hora": "23:59:59", "verbo": "finalizar"},
+}
 
 
 def _headers(token):
@@ -40,12 +44,12 @@ def _obtener_planned_date(token, route_id):
         return None, f"Error de conexion: {e}"
 
 
-def _registrar_evento(token, route_id, planned_date):
-    date_time = f"{planned_date}T23:59:59.000Z"
+def _registrar_evento(token, route_id, planned_date, event_type, hora):
+    date_time = f"{planned_date}T{hora}.000Z"
     payload = {
         "date_time": date_time,
         "route_id": route_id,
-        "type": EVENT_TYPE,
+        "type": event_type,
     }
     try:
         r = requests.post(API_EVENTS_REGISTER, headers=_headers(token), json=payload, timeout=REQUEST_TIMEOUT)
@@ -56,36 +60,48 @@ def _registrar_evento(token, route_id, planned_date):
         return False, planned_date, f"Error de conexion: {e}"
 
 
-def _procesar_ruta(token, route_id):
+def _procesar_ruta(token, route_id, event_type, hora):
     planned_date, err = _obtener_planned_date(token, route_id)
     if err:
         return route_id, False, None, f"GET ruta: {err}"
-    ok, fecha, err = _registrar_evento(token, route_id, planned_date)
+    ok, fecha, err = _registrar_evento(token, route_id, planned_date, event_type, hora)
     if not ok:
         return route_id, False, fecha, f"POST evento: {err}"
     return route_id, True, fecha, None
 
 
-def pagina_finalizar_rutas():
-    render_header("Finalizar Rutas", "Registra eventos ROUTE_FINISHED para una lista de rutas")
+def pagina_eventos_ruta():
+    render_header("Eventos de Ruta", "Registra eventos ROUTE_STARTED o ROUTE_FINISHED para una lista de rutas")
 
     render_guide(
         steps=[
+            "<strong>Elige la accion</strong> — Iniciar (<code>ROUTE_STARTED</code>) o Finalizar (<code>ROUTE_FINISHED</code>).",
             "<strong>Ingresa el token</strong> — Token de API SimpliRoute de la cuenta donde estan las rutas.",
-            "<strong>Pega los UUIDs</strong> — Uno por linea. Por cada UUID se consulta su <code>planned_date</code> via GET y luego se registra el evento de finalizacion.",
-            "<strong>Procesa</strong> — Para cada ruta se envia <code>POST /v1/events/register/</code> con <code>type: ROUTE_FINISHED</code> y <code>date_time</code> al cierre del dia de la ruta.",
+            "<strong>Pega los UUIDs</strong> — Uno por linea. Por cada UUID se consulta su <code>planned_date</code> via GET y luego se registra el evento.",
+            "<strong>Procesa</strong> — Para cada ruta se envia <code>POST /v1/events/register/</code> con el <code>type</code> elegido y <code>date_time</code> al inicio (00:00:00) o fin (23:59:59) del dia de la ruta.",
         ],
-        tip="El endpoint vive en <code>api-mobile.simpliroute.com</code> (no en el API normal). El <code>date_time</code> se construye como <code>{planned_date}T23:59:59.000Z</code>.",
+        tip="El endpoint vive en <code>api-mobile.simpliroute.com</code> (no en el API normal). Iniciar usa <code>{planned_date}T00:00:00.000Z</code>; Finalizar usa <code>{planned_date}T23:59:59.000Z</code>.",
     )
 
-    # --- Paso 1: Token ---
-    render_label("Paso 1 · Token")
+    # --- Paso 1: Accion ---
+    render_label("Paso 1 · Accion")
+    accion = st.radio(
+        "Accion",
+        list(EVENT_CONFIG.keys()),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="ev_accion",
+    )
+    cfg = EVENT_CONFIG[accion]
+
+    # --- Paso 2: Token ---
+    render_label("Paso 2 · Token")
     token = st.text_input(
         "Token",
         type="password",
         label_visibility="collapsed",
         placeholder="Token de API",
-        key="finrut_token",
+        key="ev_token",
     )
 
     if not token:
@@ -98,18 +114,18 @@ def pagina_finalizar_rutas():
         st.stop()
     render_cuenta_badge(f"Cuenta: {nombre_cuenta}")
 
-    # --- Paso 2: UUIDs ---
-    render_label("Paso 2 · UUIDs de rutas (uno por linea)")
+    # --- Paso 3: UUIDs ---
+    render_label("Paso 3 · UUIDs de rutas (uno por linea)")
     uuids_input = st.text_area(
         "UUIDs",
         placeholder="4b086533-9ca3-4a5a-baf4-342dec5cc0c6\n18e2e0b8-4db5-4a17-bb39-d5b3a9c5e393",
         label_visibility="collapsed",
         height=200,
-        key="finrut_uuids",
+        key="ev_uuids",
     )
 
     if not uuids_input or not uuids_input.strip():
-        render_tip("Pega los UUIDs de las rutas a finalizar.")
+        render_tip(f"Pega los UUIDs de las rutas a {cfg['verbo']}.")
         st.stop()
 
     uuids = []
@@ -131,7 +147,7 @@ def pagina_finalizar_rutas():
     with col2:
         st.markdown(render_stat(duplicados, "duplicados ignorados"), unsafe_allow_html=True)
 
-    if not st.button(f"Finalizar {len(uuids)} ruta(s)", type="primary", key="btn_finrut"):
+    if not st.button(f"{accion} {len(uuids)} ruta(s)", type="primary", key="btn_ev"):
         st.stop()
 
     # --- Procesamiento paralelo ---
@@ -144,7 +160,10 @@ def pagina_finalizar_rutas():
 
     procesados = 0
     with ThreadPoolExecutor(max_workers=ROUTE_WORKERS) as executor:
-        futures = {executor.submit(_procesar_ruta, token, uid): uid for uid in uuids}
+        futures = {
+            executor.submit(_procesar_ruta, token, uid, cfg["type"], cfg["hora"]): uid
+            for uid in uuids
+        }
         for future in as_completed(futures):
             route_id, ok, fecha, err = future.result()
             procesados += 1
@@ -160,7 +179,7 @@ def pagina_finalizar_rutas():
     finish_progress(barra)
 
     if exitosos > 0:
-        st.success(f"{exitosos} de {total} rutas finalizadas correctamente")
+        st.success(f"{exitosos} de {total} rutas procesadas correctamente ({cfg['type']})")
         with st.expander(f"Ver {exitosos} ruta(s) procesada(s)", expanded=False):
             for rid, fecha in detalle_ok:
                 st.markdown(f"- `{rid}` — `{fecha}`")
