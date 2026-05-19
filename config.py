@@ -6,6 +6,7 @@ API_SEND_WEBHOOKS = "https://api.simpliroute.com/v1/mobile/send-webhooks"
 API_SEND_PLAN_WEBHOOKS = "https://api.simpliroute.com/v1/mobile/send-plan-webhooks"
 API_SEND_ROUTE_WEBHOOKS = "https://api.simpliroute.com/v1/mobile/send-route-webhooks"
 API_SEND_ON_ITS_WAY_WEBHOOKS = "https://api.simpliroute.com/v1/mobile/send-on-its-way-webhooks"
+API_EVENTS_REGISTER = "https://api-mobile.simpliroute.com/v1/events/register/"
 
 # Timeouts and delays (seconds)
 REQUEST_TIMEOUT = 60

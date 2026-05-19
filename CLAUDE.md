@@ -1,7 +1,7 @@
 # SimpliRoute Tools
 
 ## Descripcion
-App Streamlit multi-herramienta con navegacion por sidebar. Incluye trece herramientas:
+App Streamlit multi-herramienta con navegacion por sidebar. Incluye catorce herramientas:
 1. **Edicion Masiva de Visitas** — Sube un CSV y edita visitas en bloque via API SimpliRoute (PUT).
 2. **Webhooks Likewise** — Envia webhooks a Google Cloud Functions para procesar rutas/visitas del middleware Likewise (POST).
 3. **Mover Visitas Likewise** — Busca visitas por rango de fechas, filtra por reference o ID, y las mueve a una fecha destino en las 4 cuentas Likewise (GET + PUT).
@@ -15,6 +15,7 @@ App Streamlit multi-herramienta con navegacion por sidebar. Incluye trece herram
 11. **Eliminar Visitas BAT** — (herramienta secundaria, solo busqueda por API). La version completa con acceso a BD es una app Flet standalone en `C:\Proyectos\EliminarBAT\`.
 12. **Asignacion Fija Uni** — Cuatro sub-tabs: (a) Actualizar planeacion nacional: sube Excel de planeacion y hace upsert en Supabase (`planeacion_nacional`); (b) Generar archivo de ruteo: rellena ventanas/lat/lon/habilidades desde Supabase y guarda datos en tablas provisionales por agencia; (c) Actualizar Habilidades: asigna habilidad F-prefijada (habilidad_1..4 con rotacion) desde archivo de planeacion; (d) Actualizar datos Simpli: sube Plan SimpliRoute, toma references (col N), los cruza con tabla provisional y hace PUT de ventanas y cargas en SimpliRoute.
 13. **Cambio de Fechas** — Tres sub-tabs: (a) Cambiar Fecha de Plan: mueve un plan y sus rutas a nueva fecha; (b) Cambiar Fecha de Rutas: actualiza `planned_date` de rutas seleccionadas (cascadea a visitas, no al plan); (c) Cambiar Fecha de Visitas: actualiza `planned_date` de visitas en bulk (no afecta rutas ni plan).
+14. **Finalizar Rutas** — Registra eventos `ROUTE_FINISHED` para una lista de UUIDs de ruta. Por cada UUID hace `GET /v1/routes/routes/{uuid}/` para obtener el `planned_date` y luego `POST` al endpoint mobile de eventos con `date_time` al cierre del dia. Token unico ingresado a mano; procesamiento paralelo (10 workers).
 
 ## Stack
 - **Python 3.12.3** con entorno virtual `.venv`
@@ -54,6 +55,7 @@ unilever.py                          # Pagina Unilever (UI + API edicion cargas/
 zonas_kml.py                         # Pagina Zonas KML (UI + API creacion/eliminacion de zonas)
 recuperar_lvp.py                     # Pagina Recuperar Visitas LVP (UI + busqueda hibrida + asignacion)
 cambiar_fecha_plan.py                # Pagina Cambio de Fechas: 3 tabs (Plan / Rutas / Visitas)
+finalizar_rutas.py                   # Pagina Finalizar Rutas (POST eventos ROUTE_FINISHED desde lista de UUIDs)
 cuentas.csv                          # Cuentas Liverpool (nombre, id, token)
 requirements.txt                     # Dependencias para Streamlit Cloud
 runtime.txt                          # Pin Python 3.12 para Streamlit Cloud
@@ -320,6 +322,13 @@ Cuatro tabs en `asignacion_fija_uni.py`. Supabase client se obtiene via `_get_su
 4. Para cada reference encontrado: GET visit por reference → obtiene id, title, address, planned_date, route
 5. PUT bulk con window_start, window_end, time_at_stop, load_2, load_3
 - References no encontrados en ruteo_dia se omiten (requiere haber generado el archivo de ruteo primero)
+
+### SimpliRoute (Finalizar Rutas)
+- `GET /v1/routes/routes/{uuid}/` — obtiene la ruta para leer su `planned_date`
+- `POST https://api-mobile.simpliroute.com/v1/events/register/` — registra evento. Payload: `{ "date_time": "{planned_date}T23:59:59.000Z", "route_id": "{uuid}", "type": "ROUTE_FINISHED" }`
+- Auth: `Authorization: Token {token}` (ingresado manualmente)
+- Dominio distinto: `api-mobile.simpliroute.com`, definido como `API_EVENTS_REGISTER` en config.py
+- Procesamiento paralelo con `ThreadPoolExecutor` (10 workers)
 
 ### SimpliRoute (Cambio de Fechas)
 - `GET /v1/routes/plans/?start_date={}&end_date={}` — listar planes por rango
