@@ -165,7 +165,7 @@ streamlit run main.py
 - `GET /v1/routes/visits/?planned_date={YYYY-MM-DD}` - Obtener visitas por fecha (una consulta por dia del rango)
 - `PUT /v1/routes/visits/` - Edicion bulk: quitar ruta y mover fecha a 2020-01-01 (lotes de total/5, max 500)
 - Auth: `Authorization: Token {token_cuenta}` (desde secrets: token_telefonica, token_entel, etc.)
-- Matching: visitas se identifican por campo `reference`, solo se limpian las que no tienen ruta asignada
+- Matching: visitas se identifican por campo `reference` (lo que el usuario pega es el "ID" desde su sistema, pero en SimpliRoute vive en `reference`; el mismo numero se manda al webhook de exclusion). Solo se limpian las que no tienen ruta asignada
 - Timeout: 600s (CLEANUP_TIMEOUT en config.py)
 
 ### SimpliRoute (Checkout General)

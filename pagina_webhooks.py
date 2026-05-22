@@ -171,18 +171,26 @@ def pagina_webhooks():
             refs_excluidos = set(items)
             refs_encontrados = {v.get("reference") for v in visitas if v.get("reference") in refs_excluidos}
             visitas_a_limpiar = [v for v in visitas if v.get("reference") in refs_excluidos and not v.get("route")]
+            visitas_con_ruta = [v for v in visitas if v.get("reference") in refs_excluidos and v.get("route")]
             no_encontrados = refs_excluidos - refs_encontrados
 
             rango_txt = fecha_desde.strftime("%Y-%m-%d") if total_dias == 1 else f"{fecha_desde.strftime('%Y-%m-%d')} a {fecha_hasta.strftime('%Y-%m-%d')}"
+            st.info(f"Busqueda completada: {len(visitas)} visitas consultadas en {rango_txt}")
+
             if no_encontrados:
-                st.warning(f"{len(no_encontrados)} visitas no encontradas en {rango_txt}")
-                with st.expander("Ver visitas no encontradas"):
+                st.warning(f"{len(no_encontrados)} de {len(refs_excluidos)} references no se encontraron en {rango_txt}")
+                with st.expander("Ver references no encontrados"):
                     st.code("\n".join(sorted(no_encontrados)))
 
+            if visitas_con_ruta:
+                st.warning(f"{len(visitas_con_ruta)} visitas ya tienen ruta asignada y no se limpiaran")
+                with st.expander("Ver visitas con ruta"):
+                    st.code("\n".join(str(v.get("reference") or v.get("id")) for v in visitas_con_ruta))
+
             if not visitas_a_limpiar:
-                pass
+                st.info("No hay visitas para limpiar.")
             else:
-                st.info(f"{len(visitas_a_limpiar)} de {len(items)} visitas encontradas en {rango_txt}")
+                st.info(f"{len(visitas_a_limpiar)} de {len(items)} visitas se limpiaran en {rango_txt}")
 
                 total_l = len(visitas_a_limpiar)
                 exitosos_l = 0
