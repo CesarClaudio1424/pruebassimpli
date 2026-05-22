@@ -55,7 +55,7 @@ DURACION_FIJA = 7
 UPSERT_BATCH_SIZE = 500
 
 RUTAS_MONTERREY = [
-    "R20081-MX01", "R20082-MX01", "R20083-MX01", "R20312-MX01", "R20338-MX01",
+    "R20082-MX01", "R20083-MX01", "R20312-MX01", "R20338-MX01",
     "R20340-MX01", "R20342-MX01", "R20343-MX01", "R20345-MX01", "R20348-MX01",
     "R20351-MX01", "R20352-MX01", "R20353-MX01", "R20355-MX01", "R20361-MX01",
     "R20362-MX01", "R20363-MX01", "R20364-MX01", "R20378-MX01", "R20384-MX01",
@@ -844,7 +844,7 @@ def _seccion_generar_ruteo():
                 "Rutas",
                 min_value=0,
                 max_value=len(RUTAS_MONTERREY),
-                value=min(5, len(RUTAS_MONTERREY)),
+                value=min(18, len(RUTAS_MONTERREY)),
                 key="agr_n_rutas",
                 label_visibility="collapsed",
             )
