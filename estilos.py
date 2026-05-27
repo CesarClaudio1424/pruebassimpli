@@ -93,14 +93,28 @@ def generar_css(THEME, dark):
         margin-bottom: 0.3rem;
     }}
 
-    /* Botones secundarios: texto completo sin cortar */
+    /* Botones secundarios: texto completo sin cortar + contraste mejorado */
     button[data-testid="stBaseButton-secondary"] {{
         white-space: normal !important;
         height: auto !important;
         min-height: 2.4rem !important;
         line-height: 1.3 !important;
         padding: 0.4rem 0.8rem !important;
-        color: {THEME["text"]} !important;
+        color: {"#ffffff" if dark else "#1a1a1a"} !important;
+        font-weight: 600 !important;
+        border: 1.5px solid {"#4a5060" if dark else "#c0c5dd"} !important;
+        background: {"#252a3a" if dark else "#ffffff"} !important;
+    }}
+    button[data-testid="stBaseButton-secondary"] p,
+    button[data-testid="stBaseButton-secondary"] div,
+    button[data-testid="stBaseButton-secondary"] span {{
+        color: {"#ffffff" if dark else "#1a1a1a"} !important;
+        font-weight: 600 !important;
+    }}
+    button[data-testid="stBaseButton-secondary"]:hover {{
+        border-color: #369CFF !important;
+        background: {"#2f3548" if dark else "#f0f4ff"} !important;
+        color: {"#ffffff" if dark else "#2A2BA1"} !important;
     }}
 
     /* Solo boton primario con gradiente */
