@@ -4,9 +4,13 @@ import csv
 import io
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
-from config import API_BASE, EDIT_TIMEOUT, EDIT_DELAY, MAX_BLOCK_SIZE
+from config import API_BASE, EDIT_TIMEOUT, EDIT_DELAY
 from utils import render_header, render_guide, render_stat, render_label, render_tip
+
+BATCH_SIZE = 200
+WORKERS = 4
 
 PLANTILLA_CAMPOS = [
     {"columna": "id", "tipo": "integer", "req": True, "desc": "ID de la visita en SimpliRoute", "ejemplo": "200189436"},
@@ -75,15 +79,6 @@ def leer_csv(archivo):
     contenido = archivo.read().decode("ISO-8859-1")
     lector = csv.DictReader(io.StringIO(contenido))
     return list(lector)
-
-
-def calcular_tamano_bloque(total):
-    bloque = total // 5
-    if bloque >= MAX_BLOCK_SIZE:
-        return MAX_BLOCK_SIZE
-    if bloque < 1:
-        return 1
-    return bloque
 
 
 def pagina_edicion():
@@ -205,26 +200,31 @@ def pagina_edicion():
             registro["planned_date"] = convertir_fecha(registro["planned_date"])
 
     total = len(data)
-    block_size = calcular_tamano_bloque(total)
+    bloques = [data[i : i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
+    total_bloques = len(bloques)
     editadas = 0
     errores = []
 
-    barra = st.progress(0, text="Procesando...")
+    barra = st.progress(0, text=f"Procesando 0/{total} (0/{total_bloques} bloques, {WORKERS} en paralelo)...")
     estado = st.empty()
 
-    for i in range(0, total, block_size):
-        bloque = data[i : i + block_size]
-        codigo, respuesta = enviar_visitas(bloque, token)
-
-        if codigo == 200:
-            editadas += len(bloque)
-        else:
-            errores.append(
-                {"bloque": i // block_size + 1, "codigo": codigo, "detalle": respuesta}
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+        futures = {ex.submit(enviar_visitas, b, token): idx for idx, b in enumerate(bloques)}
+        completados = 0
+        for fut in as_completed(futures):
+            idx = futures[fut]
+            codigo, respuesta = fut.result()
+            completados += 1
+            if codigo == 200:
+                editadas += len(bloques[idx])
+            else:
+                errores.append(
+                    {"bloque": idx + 1, "codigo": codigo, "detalle": respuesta}
+                )
+            barra.progress(
+                completados / total_bloques,
+                text=f"{editadas}/{total} visitas editadas ({completados}/{total_bloques} bloques)",
             )
-
-        progreso = min((i + block_size) / total, 1.0)
-        barra.progress(progreso, text=f"{editadas}/{total} visitas editadas")
 
     barra.progress(1.0, text="Finalizado")
 
