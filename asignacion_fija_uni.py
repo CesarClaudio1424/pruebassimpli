@@ -990,7 +990,7 @@ def _seccion_actualizar_habilidades():
         if len(row) <= HAB_COL_S_CLIENTE:
             sin_cliente += 1
             continue
-        cliente = str(row.iloc[HAB_COL_S_CLIENTE]).strip()
+        cliente = _limpiar_nota_cliente(str(row.iloc[HAB_COL_S_CLIENTE]))
         if not cliente or cliente.lower() in ("nan", "none", ""):
             sin_cliente += 1
             continue
