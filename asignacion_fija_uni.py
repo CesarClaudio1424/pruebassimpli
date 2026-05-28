@@ -353,6 +353,16 @@ RUTEO_COL_R = 17
 
 
 
+def _limpiar_nota_cliente(texto):
+    """Quita el sufijo entre parentesis para el match.
+    Ej: '30880451(F05 MTY)' -> '30880451'. Si no hay '(' devuelve el texto tal cual.
+    """
+    if not texto:
+        return ""
+    idx = texto.find("(")
+    return (texto[:idx] if idx >= 0 else texto).strip()
+
+
 def _fetch_planeacion(supabase, clientes):
     datos = {}
     for i in range(0, len(clientes), 500):
@@ -375,7 +385,7 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
     supabase = _get_supabase_client()
 
     _render_loader(loader, "Consultando Supabase...", "Buscando coincidencias por nota")
-    notas = [str(v).strip() for v in df.iloc[:, RUTEO_COL_G_NOTA]]
+    notas = [_limpiar_nota_cliente(str(v)) for v in df.iloc[:, RUTEO_COL_G_NOTA]]
     notas_unicas = list({n for n in notas if n})
     lookup = _fetch_planeacion(supabase, notas_unicas)
 
@@ -386,7 +396,7 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
     unmatched = 0
     ruteo_dia_filas = []
     for idx in range(total):
-        nota = str(df.iat[idx, RUTEO_COL_G_NOTA]).strip()
+        nota = _limpiar_nota_cliente(str(df.iat[idx, RUTEO_COL_G_NOTA]))
         data = lookup.get(nota) if nota else None
 
         # Leer valores originales del archivo antes de sobreescribir
