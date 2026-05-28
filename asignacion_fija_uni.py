@@ -429,9 +429,11 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
             df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = 7
             df.iat[idx, RUTEO_COL_K_HABILIDADES] = "Fuera"
 
-        # Solo Monterrey: si el archivo original traia 1001FM/1001EV en col K, restaurarlo
-        if agencia == "Monterrey" and hab_orig.lstrip("F").upper() in ESPECIALES_PRESERVAR:
-            df.iat[idx, RUTEO_COL_K_HABILIDADES] = hab_orig
+        # Solo Monterrey: si el archivo original traia 1001FM/1001EV en col K,
+        # mantenerla normalizada con prefijo F (F1001FM / F1001EV).
+        hab_normalizada = hab_orig.lstrip("F").upper()
+        if agencia == "Monterrey" and hab_normalizada in ESPECIALES_PRESERVAR:
+            df.iat[idx, RUTEO_COL_K_HABILIDADES] = "F" + hab_normalizada
             preservadas_especiales += 1
 
         # Recolectar para ruteo_dia con los valores originales del archivo
@@ -500,7 +502,7 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
     if preservadas_especiales:
         render_tip(
             f"Se preservaron <strong>{preservadas_especiales}</strong> habilidades "
-            "especiales (<code>1001FM</code> / <code>1001EV</code>) del archivo original."
+            "especiales (<code>F1001FM</code> / <code>F1001EV</code>) del archivo original."
         )
 
     nombre_out = nombre_original.rsplit(".", 1)[0] + "_actualizado.xlsx"
