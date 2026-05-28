@@ -394,7 +394,9 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
 
     matched = 0
     unmatched = 0
+    preservadas_especiales = 0
     ruteo_dia_filas = []
+    ESPECIALES_PRESERVAR = {"1001FM", "1001EV"}
     for idx in range(total):
         nota = _limpiar_nota_cliente(str(df.iat[idx, RUTEO_COL_G_NOTA]))
         data = lookup.get(nota) if nota else None
@@ -403,6 +405,7 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
         hora_i_orig = str(df.iat[idx, RUTEO_COL_D_HORA_INICIAL]).strip() if df.shape[1] > RUTEO_COL_D_HORA_INICIAL else ""
         hora_f_orig = str(df.iat[idx, RUTEO_COL_E_HORA_FINAL]).strip() if df.shape[1] > RUTEO_COL_E_HORA_FINAL else ""
         dur_orig = str(df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO]).strip() if df.shape[1] > RUTEO_COL_F_TIEMPO_SERVICIO else ""
+        hab_orig = str(df.iat[idx, RUTEO_COL_K_HABILIDADES]).strip() if df.shape[1] > RUTEO_COL_K_HABILIDADES else ""
 
         if data:
             matched += 1
@@ -425,6 +428,11 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
             df.iat[idx, RUTEO_COL_E_HORA_FINAL] = "23:00"
             df.iat[idx, RUTEO_COL_F_TIEMPO_SERVICIO] = 7
             df.iat[idx, RUTEO_COL_K_HABILIDADES] = "Fuera"
+
+        # Solo Monterrey: si el archivo original traia 1001FM/1001EV en col K, restaurarlo
+        if agencia == "Monterrey" and hab_orig.lstrip("F").upper() in ESPECIALES_PRESERVAR:
+            df.iat[idx, RUTEO_COL_K_HABILIDADES] = hab_orig
+            preservadas_especiales += 1
 
         # Recolectar para ruteo_dia con los valores originales del archivo
         ref = str(df.iat[idx, RUTEO_COL_J_REFERENCE]).strip() if df.shape[1] > RUTEO_COL_J_REFERENCE else ""
@@ -488,6 +496,12 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
         st.markdown(render_stat(matched, "Con match"), unsafe_allow_html=True)
     with col3:
         st.markdown(render_stat(unmatched, 'Sin match ("Fuera")'), unsafe_allow_html=True)
+
+    if preservadas_especiales:
+        render_tip(
+            f"Se preservaron <strong>{preservadas_especiales}</strong> habilidades "
+            "especiales (<code>1001FM</code> / <code>1001EV</code>) del archivo original."
+        )
 
     nombre_out = nombre_original.rsplit(".", 1)[0] + "_actualizado.xlsx"
     st.download_button(
