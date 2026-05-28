@@ -448,7 +448,7 @@ def _procesar_ruteo(df, nombre_original, habilidades_disponibles, agencia="Tláh
 
     _render_loader(loader, "Generando archivo...", "Escribiendo xlsx")
 
-    for col_idx in [2, 5, 6, 7, 8, 13]:
+    for col_idx in [2, 5, 7, 8, 13]:
         if col_idx < df.shape[1]:
             df.iloc[:, col_idx] = pd.to_numeric(df.iloc[:, col_idx], errors="coerce")
 
