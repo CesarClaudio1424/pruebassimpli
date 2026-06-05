@@ -14,6 +14,7 @@ from eliminar_bat import pagina_eliminar_bat
 from mover_visitas_likewise import pagina_mover_visitas_likewise
 from eliminar_visitas import pagina_eliminar_visitas
 from asignacion_fija_uni import pagina_asignacion_fija_uni
+from asignacion_fija_uni_2 import pagina_asignacion_fija_uni_2
 from cambiar_fecha_plan import pagina_cambiar_fecha_plan
 from checkout_bat import pagina_checkout_bat
 from reenvio_webhooks import pagina_reenvio_webhooks
@@ -56,7 +57,7 @@ with st.sidebar:
 
     pagina = st.radio(
         "Herramienta",
-        ["Edicion Masiva de Visitas", "Webhooks Likewise", "Mover Visitas Likewise", "Bloqueo LVP", "Reporte Visitas/Rutas", "Checkout General", "Checkout BAT", "Reenvio de Webhooks", "Eliminacion de Items", "Unilever", "Zonas KML", "Recuperar Visitas LVP", "Eliminar Visitas BAT", "Eliminar Visitas", "Asignacion Fija Uni", "Cambio de Fechas", "Eventos de Ruta", "Flotas"],
+        ["Edicion Masiva de Visitas", "Webhooks Likewise", "Mover Visitas Likewise", "Bloqueo LVP", "Reporte Visitas/Rutas", "Checkout General", "Checkout BAT", "Reenvio de Webhooks", "Eliminacion de Items", "Unilever", "Zonas KML", "Recuperar Visitas LVP", "Eliminar Visitas BAT", "Eliminar Visitas", "Asignacion Fija Uni", "Asignacion Fija Uni 2", "Cambio de Fechas", "Eventos de Ruta", "Flotas"],
         label_visibility="collapsed",
     )
 
@@ -99,6 +100,8 @@ elif pagina == "Eliminar Visitas":
     pagina_eliminar_visitas()
 elif pagina == "Asignacion Fija Uni":
     pagina_asignacion_fija_uni()
+elif pagina == "Asignacion Fija Uni 2":
+    pagina_asignacion_fija_uni_2()
 elif pagina == "Cambio de Fechas":
     pagina_cambiar_fecha_plan()
 elif pagina == "Eventos de Ruta":
