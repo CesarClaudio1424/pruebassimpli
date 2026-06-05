@@ -365,6 +365,7 @@ BD_SHEET = "BD"
 BD_COL_CODIGO = 0          # A  Codigo (codigo de pedido, ej MOBMX...)
 BD_COL_TIPO = 1            # B  Tipo (Sales order / otros)
 BD_COL_CODIGO_CLIENTE = 3  # D  Codigo Cliente (ej 0010757344-MX01)
+BD_COL_NOMBRE = 4          # E  Cliente (nombre del cliente -> nombre/Titulo)
 BD_COL_RUTEO = 8           # I  Ruteo (REP ELECT / PREVENTA / ...)
 BD_COL_CANT_PEDIDO = 13    # N  Cant. Pedido  -> Carga 2
 BD_COL_TOTAL_IMP = 17      # R  Total + Impuestos -> Carga 3
@@ -446,17 +447,30 @@ def _guardar_ruteo_dia(supabase, filas, agencia):
 
 
 def _fetch_planeacion_smart(supabase, clientes):
+    """Busca clientes en la planeacion tolerando el sufijo entre parentesis
+    del lado de la tabla (ej '30823403(F03 MTY)'). Devuelve dict keyed por
+    cliente limpio (sin parentesis). x=latitud, y=longitud."""
     datos = {}
-    for i in range(0, len(clientes), 500):
-        lote = clientes[i:i + 500]
+    chunk = 50
+    for i in range(0, len(clientes), chunk):
+        lote = clientes[i:i + chunk]
+        # ilike '{cod}*' atrae exactos y los que traen sufijo; se filtra abajo
+        patrones = ",".join(f"cliente.ilike.{cod}*" for cod in lote)
         try:
             resp = supabase.table(_TABLA_PLANEACION).select(
-                "cliente,nombre,direccion,latitud,longitud,"
-                "hora_inicio,hora_final,duracion,"
+                "cliente,x,y,hora_inicio,hora_final,duracion,"
                 "habilidad_1,habilidad_2,habilidad_3,habilidad_4"
-            ).in_("cliente", lote).execute()
+            ).or_(patrones).execute()
             for row in resp.data or []:
-                datos[row["cliente"]] = row
+                clave = _limpiar_nota_cliente(str(row.get("cliente", "")))
+                if not clave:
+                    continue
+                existente = datos.get(clave)
+                # preferir filas con coordenadas si hay varias (ej con/sin sufijo)
+                if existente is None or (
+                    existente.get("x") in (None, "") and row.get("x") not in (None, "")
+                ):
+                    datos[clave] = row
         except Exception as e:
             st.warning(f"Error consultando Supabase: {e}")
             return datos
@@ -514,10 +528,11 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
             descartados["(sin código cliente)"] = descartados.get("(sin código cliente)", 0) + 1
             continue
         tipo = str(df_bd.iat[idx, BD_COL_TIPO]).strip()
+        nombre = str(df_bd.iat[idx, BD_COL_NOMBRE]).strip() if df_bd.shape[1] > BD_COL_NOMBRE else ""
         cant = str(df_bd.iat[idx, BD_COL_CANT_PEDIDO]).strip() if df_bd.shape[1] > BD_COL_CANT_PEDIDO else ""
         total = str(df_bd.iat[idx, BD_COL_TOTAL_IMP]).strip() if df_bd.shape[1] > BD_COL_TOTAL_IMP else ""
         filas.append({
-            "order": order_code, "cliente": match_code,
+            "order": order_code, "cliente": match_code, "nombre": nombre,
             "tipo": tipo, "cant": cant, "total": total,
         })
 
@@ -548,12 +563,12 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
                 dur = data.get("duracion")
                 salida_a[f["cliente"]] = {
                     "customer_id_sap": f["cliente"],
-                    "nombre": data.get("nombre") or "",
+                    "nombre": f["nombre"],
                     "tiempo_de_servicio": dur if (dur not in (None, "")) else 15,
                     "horario_de_inicio": _fmt_hora(data.get("hora_inicio"), "08:00:00"),
                     "horario_de_fin": _fmt_hora(data.get("hora_final"), "20:00:00"),
-                    "latitud": data.get("latitud") or "",
-                    "longitud": data.get("longitud") or "",
+                    "latitud": data.get("x") if data.get("x") is not None else "",
+                    "longitud": data.get("y") if data.get("y") is not None else "",
                     "Telefono": "",
                     "tiene_ruta_fija": "enabled",
                     "nombre_ruta": _ruta_nombre(ruta_num),
@@ -565,10 +580,10 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
                 }
         else:
             # SALIDA B — Fuera (por pedido)
-            titulo = (data.get("nombre") if data else "") or ""
-            direccion = (data.get("direccion") if data else "") or ""
-            lat = (data.get("latitud") if data else "") or ""
-            lon = (data.get("longitud") if data else "") or ""
+            titulo = f["nombre"]
+            direccion = ""
+            lat = (data.get("x") if data and data.get("x") is not None else "")
+            lon = (data.get("y") if data and data.get("y") is not None else "")
             carga = 1 if f["tipo"].strip().lower() == "sales order" else 0
 
             row_b = {c: "" for c in RUTEO_DINAMICO_COLS}
