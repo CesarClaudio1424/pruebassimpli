@@ -367,8 +367,8 @@ BD_COL_TIPO = 1            # B  Tipo (Sales order / otros)
 BD_COL_CODIGO_CLIENTE = 3  # D  Codigo Cliente (ej 0010757344-MX01)
 BD_COL_NOMBRE = 4          # E  Cliente (nombre del cliente -> nombre/Titulo)
 BD_COL_RUTEO = 8           # I  Ruteo (REP ELECT / PREVENTA / ...)
-BD_COL_CANT_PEDIDO = 13    # N  Cant. Pedido  -> Carga 2
-BD_COL_TOTAL_IMP = 17      # R  Total + Impuestos -> Carga 3
+BD_COL_CANT_PEDIDO = 13    # N  Cant. Pedido  -> Carga 3
+BD_COL_TOTAL_IMP = 17      # R  Total + Impuestos -> Carga 2
 
 RUTEO_VALIDOS = {"REP ELECT", "PREVENTA"}
 
@@ -598,8 +598,8 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
             row_b["Longitud"] = lon
             row_b["ID"] = f["order"]
             row_b["Habilidades requeridas"] = "Fuera"
-            row_b["Carga 2"] = f["cant"]
-            row_b["Carga 3"] = f["total"]
+            row_b["Carga 2"] = f["total"]
+            row_b["Carga 3"] = f["cant"]
             row_b["Agencia"] = agencia
             salida_b_rows.append(row_b)
 
@@ -609,8 +609,8 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
                     "hora_inicio": "08:00",
                     "hora_final": "20:00",
                     "duracion": "15",
-                    "carga_2": _try_num(f["cant"]),
-                    "carga_3": _try_num(f["total"]),
+                    "carga_2": _try_num(f["total"]),
+                    "carga_3": _try_num(f["cant"]),
                 })
 
     # 4. Guardar en smart_* (Fuera) para el tab de Actualizar datos Simpli
