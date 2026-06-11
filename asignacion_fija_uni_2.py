@@ -81,6 +81,11 @@ def _col_letter_to_index(letter):
 COL_AGENCIA = _col_letter_to_index("C")
 COL_CLIENTE = _col_letter_to_index("D")
 COL_SECTOR = _col_letter_to_index("AH")
+COL_CALLE = _col_letter_to_index("R")       # dsStreet
+COL_LOCALIDAD = _col_letter_to_index("S")   # dsLocality
+COL_POBLACION = _col_letter_to_index("T")   # dsPopulation
+COL_LATITUD = _col_letter_to_index("X")
+COL_LONGITUD = _col_letter_to_index("Y")
 
 
 def _sin_acentos(texto):
@@ -137,11 +142,29 @@ def _extraer_registros(df):
             descartados_agencia += 1
             continue
 
-        registros.append({
+        registro = {
             "cliente": cliente,
             "sector": sector,
             "agencia": agencia,
-        })
+        }
+
+        calle = str(row.iloc[COL_CALLE]).strip()
+        localidad = str(row.iloc[COL_LOCALIDAD]).strip()
+        poblacion = str(row.iloc[COL_POBLACION]).strip()
+        direccion = ", ".join(
+            p for p in (calle, localidad, poblacion)
+            if p and p.lower() not in ("nan", "none")
+        )
+        if direccion:
+            registro["direccion"] = direccion
+
+        lat = _try_num(row.iloc[COL_LATITUD])
+        lon = _try_num(row.iloc[COL_LONGITUD])
+        if lat is not None and lon is not None:
+            registro["x"] = lat
+            registro["y"] = lon
+
+        registros.append(registro)
 
     vistos = set()
     unicos = []
@@ -175,9 +198,27 @@ def _contar_existentes(supabase, clientes):
 
 
 def _upsert_lote(supabase, registros):
-    return supabase.table(_TABLA_PLANEACION).upsert(
-        registros, on_conflict="cliente"
-    ).execute()
+    # PostgREST exige que todas las filas de un upsert tengan las mismas keys;
+    # direccion/x/y son opcionales (no se mandan vacios para no pisar datos
+    # existentes), asi que se sube un sub-lote por combinacion de keys.
+    grupos = {}
+    for r in registros:
+        grupos.setdefault(tuple(sorted(r)), []).append(r)
+    for grupo in grupos.values():
+        supabase.table(_TABLA_PLANEACION).upsert(
+            grupo, on_conflict="cliente"
+        ).execute()
+
+
+_SQL_AGREGAR_DIRECCION = "alter table smart_route_planeacion add column direccion text;"
+
+
+def _columna_direccion_existe(supabase):
+    try:
+        supabase.table(_TABLA_PLANEACION).select("direccion").limit(1).execute()
+        return True
+    except Exception:
+        return False
 
 
 _META_FILE = os.path.join(os.path.dirname(__file__), ".smart_planeacion_meta.json")
@@ -245,7 +286,8 @@ def _seccion_actualizar_planeacion():
     if not archivo:
         render_tip(
             "Columnas esperadas: <strong>C</strong> = Agencia, <strong>D</strong> = Cliente, "
-            "<strong>AH</strong> = Sector. "
+            "<strong>AH</strong> = Sector, <strong>R/S/T</strong> = Dirección (calle, colonia, población), "
+            "<strong>X</strong> = Latitud, <strong>Y</strong> = Longitud. "
             "Solo se cargan filas de <strong>Tláhuac</strong> y <strong>Monterrey</strong>."
         )
         return
@@ -293,6 +335,15 @@ def _seccion_actualizar_planeacion():
         return
 
     supabase = _get_supabase_client()
+
+    if not _columna_direccion_existe(supabase):
+        registros = [{k: v for k, v in r.items() if k != "direccion"} for r in registros]
+        render_tip(
+            "La tabla no tiene columna <code>direccion</code>; se sube sin direcciones. "
+            f"Para habilitarla ejecuta en Supabase: <code>{_SQL_AGREGAR_DIRECCION}</code>",
+            warning=True,
+        )
+
     loader = st.empty()
 
     _render_loader(loader, "Consultando clientes existentes...", f"{len(registros):,} a verificar")
@@ -446,21 +497,24 @@ def _guardar_ruteo_dia(supabase, filas, agencia):
         st.warning(f"No se pudo guardar en {tabla}: {e}")
 
 
-def _fetch_planeacion_smart(supabase, clientes):
+def _fetch_planeacion_smart(supabase, clientes, con_direccion=False):
     """Busca clientes en la planeacion tolerando el sufijo entre parentesis
     del lado de la tabla (ej '30823403(F03 MTY)'). Devuelve dict keyed por
     cliente limpio (sin parentesis). x=latitud, y=longitud."""
     datos = {}
+    cols = (
+        "cliente,x,y,hora_inicio,hora_final,duracion,"
+        "habilidad_1,habilidad_2,habilidad_3,habilidad_4"
+    )
+    if con_direccion:
+        cols = "direccion," + cols
     chunk = 50
     for i in range(0, len(clientes), chunk):
         lote = clientes[i:i + chunk]
         # ilike '{cod}*' atrae exactos y los que traen sufijo; se filtra abajo
         patrones = ",".join(f"cliente.ilike.{cod}*" for cod in lote)
         try:
-            resp = supabase.table(_TABLA_PLANEACION).select(
-                "cliente,x,y,hora_inicio,hora_final,duracion,"
-                "habilidad_1,habilidad_2,habilidad_3,habilidad_4"
-            ).or_(patrones).execute()
+            resp = supabase.table(_TABLA_PLANEACION).select(cols).or_(patrones).execute()
             for row in resp.data or []:
                 clave = _limpiar_nota_cliente(str(row.get("cliente", "")))
                 if not clave:
@@ -503,9 +557,52 @@ def _escribir_excel(df, sheet_name, num_cols=()):
     return buffer
 
 
-def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
+# Maestro de clientes (CLIENTES UNILEVER MTY Y TLA), hoja raw_customer_imports:
+# aporta ventanas horarias, tiempo de servicio y coordenadas de respaldo.
+_MAESTRO_COLS = (
+    "customer_id_sap", "tiempo_de_servicio", "horario_de_inicio",
+    "horario_de_fin", "latitud", "longitud",
+)
+
+
+def _leer_maestro_clientes(archivo):
+    """Lee el maestro y devuelve dict keyed por codigo de cliente limpio."""
+    df = pd.read_excel(archivo, dtype=str, header=0).fillna("")
+    faltantes = [c for c in _MAESTRO_COLS if c not in df.columns]
+    if faltantes:
+        raise ValueError(f"Faltan columnas en el maestro: {', '.join(faltantes)}")
+    maestro = {}
+    for cid, tser, hini, hfin, lat, lon in zip(
+        df["customer_id_sap"], df["tiempo_de_servicio"],
+        df["horario_de_inicio"], df["horario_de_fin"],
+        df["latitud"], df["longitud"],
+    ):
+        cid = _limpiar_codigo_cliente(cid)
+        if not cid or cid in maestro:
+            continue
+        maestro[cid] = {
+            "tiempo": _try_num(tser),
+            "hora_inicio": str(hini).strip(),
+            "hora_final": str(hfin).strip(),
+            "lat": _try_num(lat),
+            "lon": _try_num(lon),
+        }
+    return maestro
+
+
+def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia, maestro):
     loader = st.empty()
     supabase = _get_supabase_client()
+
+    con_direccion = _columna_direccion_existe(supabase)
+    if not con_direccion:
+        render_tip(
+            "La tabla <code>smart_route_planeacion</code> no tiene columna "
+            "<code>direccion</code> — la Salida B saldrá sin dirección. "
+            f"Ejecuta en Supabase: <code>{_SQL_AGREGAR_DIRECCION}</code> "
+            "y vuelve a subir la planeación nacional.",
+            warning=True,
+        )
 
     _render_loader(loader, "Filtrando pedidos...", f"{len(df_bd):,} filas en hoja BD")
 
@@ -539,16 +636,20 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
     # 2. Lookup planeacion
     clientes = list({f["cliente"] for f in filas})
     _render_loader(loader, "Consultando planeación...", f"{len(clientes):,} clientes")
-    lookup = _fetch_planeacion_smart(supabase, clientes)
+    lookup = _fetch_planeacion_smart(supabase, clientes, con_direccion)
 
     # 3. Clasificacion
     _render_loader(loader, "Clasificando ruta fija / fuera...", f"{len(filas):,} pedidos")
     salida_a = {}      # cliente -> fila (unico por cliente)
     salida_b_rows = []  # por pedido
     smart_dia = []      # upsert smart_* (solo fuera, por reference de pedido)
+    clientes_sin_maestro = set()
 
     for f in filas:
         data = lookup.get(f["cliente"])
+        m = maestro.get(f["cliente"]) or {}
+        if not m:
+            clientes_sin_maestro.add(f["cliente"])
         ruta_num = None
         if data:
             for n in range(1, 5):
@@ -560,15 +661,19 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
         if ruta_num:
             # SALIDA A — ruta fija (dedup por cliente)
             if f["cliente"] not in salida_a:
-                dur = data.get("duracion")
+                dur = m.get("tiempo")
+                if dur is None:
+                    dur = data.get("duracion")
+                lat = data.get("x") if data.get("x") is not None else m.get("lat")
+                lon = data.get("y") if data.get("y") is not None else m.get("lon")
                 salida_a[f["cliente"]] = {
                     "customer_id_sap": f["cliente"],
                     "nombre": f["nombre"],
                     "tiempo_de_servicio": dur if (dur not in (None, "")) else 15,
-                    "horario_de_inicio": _fmt_hora(data.get("hora_inicio"), "08:00:00"),
-                    "horario_de_fin": _fmt_hora(data.get("hora_final"), "20:00:00"),
-                    "latitud": data.get("x") if data.get("x") is not None else "",
-                    "longitud": data.get("y") if data.get("y") is not None else "",
+                    "horario_de_inicio": _fmt_hora(m.get("hora_inicio") or data.get("hora_inicio"), "08:00:00"),
+                    "horario_de_fin": _fmt_hora(m.get("hora_final") or data.get("hora_final"), "20:00:00"),
+                    "latitud": lat if lat is not None else "",
+                    "longitud": lon if lon is not None else "",
                     "Telefono": "",
                     "tiene_ruta_fija": "enabled",
                     "nombre_ruta": _ruta_nombre(ruta_num),
@@ -581,24 +686,27 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
         else:
             # SALIDA B — Fuera (por pedido)
             titulo = f["nombre"]
-            direccion = ""
-            lat = (data.get("x") if data and data.get("x") is not None else "")
-            lon = (data.get("y") if data and data.get("y") is not None else "")
-            carga = 1 if f["tipo"].strip().lower() == "sales order" else 0
+            direccion = (data.get("direccion") or "") if data else ""
+            lat = data.get("x") if (data and data.get("x") is not None) else m.get("lat")
+            lon = data.get("y") if (data and data.get("y") is not None) else m.get("lon")
+            es_venta = f["tipo"].strip().lower() == "sales order"
+            hora_ini = _fmt_hora(m.get("hora_inicio"), "08:00:00")
+            hora_fin = _fmt_hora(m.get("hora_final"), "20:00:00")
+            tiempo = m.get("tiempo") if m.get("tiempo") is not None else 15
 
             row_b = {c: "" for c in RUTEO_DINAMICO_COLS}
             row_b["Titulo"] = titulo
             row_b["Direccion"] = direccion
-            row_b["Carga"] = carga
-            row_b["Hora Inicial"] = "08:00:00"
-            row_b["Hora Final"] = "20:00:00"
-            row_b["Tiempo Servicio"] = 15
+            row_b["Carga"] = 1 if es_venta else 0
+            row_b["Hora Inicial"] = hora_ini
+            row_b["Hora Final"] = hora_fin
+            row_b["Tiempo Servicio"] = tiempo
             row_b["Notas"] = f["cliente"]
-            row_b["Latitud"] = lat
-            row_b["Longitud"] = lon
+            row_b["Latitud"] = lat if lat is not None else ""
+            row_b["Longitud"] = lon if lon is not None else ""
             row_b["ID"] = f["order"]
             row_b["Habilidades requeridas"] = "Fuera"
-            row_b["Carga 2"] = f["total"]
+            row_b["Carga 2"] = f["total"] if es_venta else 0
             row_b["Carga 3"] = f["cant"]
             row_b["Agencia"] = agencia
             salida_b_rows.append(row_b)
@@ -606,10 +714,10 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
             if f["order"] and f["order"] not in ("", "nan", "None"):
                 smart_dia.append({
                     "reference": f["order"],
-                    "hora_inicio": "08:00",
-                    "hora_final": "20:00",
-                    "duracion": "15",
-                    "carga_2": _try_num(f["total"]),
+                    "hora_inicio": hora_ini,
+                    "hora_final": hora_fin,
+                    "duracion": str(tiempo),
+                    "carga_2": _try_num(f["total"]) if es_venta else 0,
                     "carga_3": _try_num(f["cant"]),
                 })
 
@@ -649,6 +757,13 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
             render_stat(descartados_total, "Descartados",
                         style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);"),
             unsafe_allow_html=True,
+        )
+
+    if clientes_sin_maestro:
+        render_tip(
+            f"<strong>{len(clientes_sin_maestro)}</strong> clientes no están en el maestro — "
+            "usan los valores de la planeación o el default 08:00-20:00 / 15 min.",
+            warning=True,
         )
 
     if descartados:
@@ -777,13 +892,23 @@ def _seccion_generar_ruteo():
         label_visibility="collapsed",
     )
 
-    if not archivo:
+    render_label("Archivo maestro de clientes (CLIENTES UNILEVER MTY Y TLA)")
+    archivo_maestro = st.file_uploader(
+        "Sube el maestro de clientes",
+        type=["xlsx", "xls"],
+        key="agr2_maestro",
+        label_visibility="collapsed",
+    )
+
+    if not archivo or not archivo_maestro:
         render_tip(
-            "Se usa <strong>solo la hoja BD</strong>. Se toman las filas cuyo "
+            "Del Monitoreo se usa <strong>solo la hoja BD</strong>. Se toman las filas cuyo "
             "<strong>Ruteo (col I)</strong> sea <code>REP ELECT</code> o <code>PREVENTA</code> "
             "(el resto se reporta como descartado). "
             "Match por <strong>Código Cliente (col D)</strong> sin ceros ni <code>-MX01</code> "
             "contra la planeación. "
+            "El <strong>maestro de clientes</strong> aporta ventanas horarias, tiempo de servicio "
+            "y coordenadas de respaldo cuando la planeación no las tiene. "
             "Genera dos archivos: <strong>Salida A</strong> (ruta fija) con los que tienen habilidad, "
             "y <strong>Salida B</strong> (RUTEO_DINAMICO) con los <strong>Fuera</strong>."
         )
@@ -803,6 +928,22 @@ def _seccion_generar_ruteo():
         return
     loader.empty()
 
+    # El maestro es pesado (~60k filas): se cachea el parseo en session_state
+    # para no releerlo en cada rerun de Streamlit.
+    cache_key = f"{archivo_maestro.name}:{archivo_maestro.size}"
+    if st.session_state.get("agr2_maestro_key") != cache_key:
+        loader_m = st.empty()
+        _render_loader(loader_m, "Leyendo maestro de clientes...", archivo_maestro.name)
+        try:
+            st.session_state["agr2_maestro_data"] = _leer_maestro_clientes(archivo_maestro)
+            st.session_state["agr2_maestro_key"] = cache_key
+        except Exception as e:
+            loader_m.empty()
+            st.error(f"Error al leer el maestro: {e}")
+            return
+        loader_m.empty()
+    maestro = st.session_state["agr2_maestro_data"]
+
     if habilidades_disponibles:
         render_tip(
             f"<strong>{len(habilidades_disponibles)}</strong> habilidades activas: "
@@ -811,12 +952,16 @@ def _seccion_generar_ruteo():
     else:
         render_tip("No hay vehículos/rutas activos. Todos los clientes quedarán como <strong>Fuera</strong>.", warning=True)
 
-    st.markdown(render_stat(len(df_bd), "Filas en hoja BD"), unsafe_allow_html=True)
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        st.markdown(render_stat(len(df_bd), "Filas en hoja BD"), unsafe_allow_html=True)
+    with col_s2:
+        st.markdown(render_stat(len(maestro), "Clientes en maestro"), unsafe_allow_html=True)
     render_label("Vista previa (primeras 10 filas)")
     st.dataframe(df_bd.head(10), use_container_width=True)
 
     if st.button("Procesar y generar archivos", type="primary", use_container_width=True, key="agr2_btn_procesar"):
-        _procesar_ruteo_2(df_bd, archivo.name, habilidades_disponibles, agencia)
+        _procesar_ruteo_2(df_bd, archivo.name, habilidades_disponibles, agencia, maestro)
 
 
 def _seccion_actualizar_habilidades():
@@ -1176,7 +1321,7 @@ def pagina_asignacion_fija_uni_2():
         [
             "Selecciona la accion a ejecutar.",
             "Actualizar planeacion: sube el Excel y se filtran filas de Tláhuac y Monterrey (columna C).",
-            "Generar archivos de ruteo: sube el Monitoreo de Pedidos (hoja BD); genera Salida A (ruta fija) y Salida B (Fuera).",
+            "Generar archivos de ruteo: sube el Monitoreo de Pedidos (hoja BD) y el maestro de clientes (ventanas y tiempo de servicio); genera Salida A (ruta fija) y Salida B (Fuera).",
             "Actualizar Habilidades: guarda la habilidad como número (ej 20020) con rotacion.",
             "Tablas Supabase propias: smart_route_planeacion, smart_tlahuac, smart_monterrey.",
         ],
