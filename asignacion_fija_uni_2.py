@@ -6,7 +6,7 @@ import unicodedata
 import io
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from utils import (
     render_header, render_guide, render_stat, render_label,
     render_tip, render_error_item,
@@ -50,6 +50,15 @@ def _render_loader(placeholder, mensaje, sub=""):
 
 # Tablas Supabase propias de esta seccion (independientes del proceso original)
 _TABLA_PLANEACION = "smart_route_planeacion"
+_TABLA_MAESTRO = "smart_maestro_clientes"
+
+_SQL_CREAR_MAESTRO = (
+    "create table smart_maestro_clientes ("
+    "cliente text primary key, nombre text, tiempo_servicio numeric, "
+    "hora_inicio text, hora_final text, latitud double precision, "
+    "longitud double precision, telefono text, "
+    "updated_at timestamptz default now());"
+)
 
 AGENCIAS_VALIDAS = {"tlahuac": "Tláhuac", "monterrey": "Monterrey"}
 HORA_INICIO_FIJA = "07:00"
@@ -559,6 +568,7 @@ def _escribir_excel(df, sheet_name, num_cols=()):
 
 # Maestro de clientes (CLIENTES UNILEVER MTY Y TLA), hoja raw_customer_imports:
 # aporta ventanas horarias, tiempo de servicio y coordenadas de respaldo.
+# Vive en Supabase (_TABLA_MAESTRO) y se actualiza en su propia pestaña.
 _MAESTRO_COLS = (
     "customer_id_sap", "tiempo_de_servicio", "horario_de_inicio",
     "horario_de_fin", "latitud", "longitud",
@@ -566,31 +576,62 @@ _MAESTRO_COLS = (
 
 
 def _leer_maestro_clientes(archivo):
-    """Lee el maestro y devuelve dict keyed por codigo de cliente limpio."""
+    """Lee el Excel del maestro y devuelve registros para la tabla Supabase."""
     df = pd.read_excel(archivo, dtype=str, header=0).fillna("")
     faltantes = [c for c in _MAESTRO_COLS if c not in df.columns]
     if faltantes:
         raise ValueError(f"Faltan columnas en el maestro: {', '.join(faltantes)}")
-    maestro = {}
-    for cid, tser, hini, hfin, lat, lon in zip(
-        df["customer_id_sap"], df["tiempo_de_servicio"],
+    nombres = df["nombre"] if "nombre" in df.columns else [""] * len(df)
+    telefonos = df["Telefono"] if "Telefono" in df.columns else [""] * len(df)
+    registros = []
+    vistos = set()
+    for cid, nom, tser, hini, hfin, lat, lon, tel in zip(
+        df["customer_id_sap"], nombres, df["tiempo_de_servicio"],
         df["horario_de_inicio"], df["horario_de_fin"],
-        df["latitud"], df["longitud"],
+        df["latitud"], df["longitud"], telefonos,
     ):
         cid = _limpiar_codigo_cliente(cid)
-        if not cid or cid in maestro:
+        if not cid or cid in vistos:
             continue
-        maestro[cid] = {
-            "tiempo": _try_num(tser),
+        vistos.add(cid)
+        registros.append({
+            "cliente": cid,
+            "nombre": str(nom).strip(),
+            "tiempo_servicio": _try_num(tser),
             "hora_inicio": str(hini).strip(),
             "hora_final": str(hfin).strip(),
-            "lat": _try_num(lat),
-            "lon": _try_num(lon),
-        }
-    return maestro
+            "latitud": _try_num(lat),
+            "longitud": _try_num(lon),
+            "telefono": str(tel).strip(),
+        })
+    return registros
 
 
-def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia, maestro):
+def _fetch_maestro_clientes(supabase, clientes):
+    """Trae del maestro en Supabase los datos de los clientes indicados.
+    Devuelve dict por cliente; None si la tabla no existe o falla la consulta."""
+    datos = {}
+    try:
+        for i in range(0, len(clientes), 500):
+            lote = clientes[i:i + 500]
+            resp = supabase.table(_TABLA_MAESTRO).select(
+                "cliente,tiempo_servicio,hora_inicio,hora_final,latitud,longitud"
+            ).in_("cliente", lote).execute()
+            for row in resp.data or []:
+                datos[row["cliente"]] = {
+                    "tiempo": row.get("tiempo_servicio"),
+                    "hora_inicio": row.get("hora_inicio") or "",
+                    "hora_final": row.get("hora_final") or "",
+                    "lat": row.get("latitud"),
+                    "lon": row.get("longitud"),
+                }
+    except Exception as e:
+        st.warning(f"No se pudo leer el maestro de Supabase: {e}")
+        return None
+    return datos
+
+
+def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
     loader = st.empty()
     supabase = _get_supabase_client()
 
@@ -633,10 +674,27 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia, 
             "tipo": tipo, "cant": cant, "total": total,
         })
 
-    # 2. Lookup planeacion
+    # 2. Lookup planeacion + maestro de clientes
     clientes = list({f["cliente"] for f in filas})
     _render_loader(loader, "Consultando planeación...", f"{len(clientes):,} clientes")
     lookup = _fetch_planeacion_smart(supabase, clientes, con_direccion)
+
+    _render_loader(loader, "Consultando maestro de clientes...", f"{len(clientes):,} clientes")
+    maestro = _fetch_maestro_clientes(supabase, clientes)
+    if maestro is None:
+        maestro = {}
+        render_tip(
+            f"La tabla <code>{_TABLA_MAESTRO}</code> no existe o no se pudo consultar — "
+            "se usan ventanas y tiempos por defecto. Créala en Supabase con: "
+            f"<code>{_SQL_CREAR_MAESTRO}</code>",
+            warning=True,
+        )
+    elif not maestro:
+        render_tip(
+            "El maestro de clientes está vacío en Supabase — se usan ventanas y tiempos "
+            "por defecto. Súbelo en la pestaña <em>Actualizar maestro de clientes</em>.",
+            warning=True,
+        )
 
     # 3. Clasificacion
     _render_loader(loader, "Clasificando ruta fija / fuera...", f"{len(filas):,} pedidos")
@@ -892,23 +950,15 @@ def _seccion_generar_ruteo():
         label_visibility="collapsed",
     )
 
-    render_label("Archivo maestro de clientes (CLIENTES UNILEVER MTY Y TLA)")
-    archivo_maestro = st.file_uploader(
-        "Sube el maestro de clientes",
-        type=["xlsx", "xls"],
-        key="agr2_maestro",
-        label_visibility="collapsed",
-    )
-
-    if not archivo or not archivo_maestro:
+    if not archivo:
         render_tip(
             "Del Monitoreo se usa <strong>solo la hoja BD</strong>. Se toman las filas cuyo "
             "<strong>Ruteo (col I)</strong> sea <code>REP ELECT</code> o <code>PREVENTA</code> "
             "(el resto se reporta como descartado). "
             "Match por <strong>Código Cliente (col D)</strong> sin ceros ni <code>-MX01</code> "
             "contra la planeación. "
-            "El <strong>maestro de clientes</strong> aporta ventanas horarias, tiempo de servicio "
-            "y coordenadas de respaldo cuando la planeación no las tiene. "
+            "El <strong>maestro de clientes</strong> (cargado en Supabase) aporta ventanas horarias, "
+            "tiempo de servicio y coordenadas de respaldo cuando la planeación no las tiene. "
             "Genera dos archivos: <strong>Salida A</strong> (ruta fija) con los que tienen habilidad, "
             "y <strong>Salida B</strong> (RUTEO_DINAMICO) con los <strong>Fuera</strong>."
         )
@@ -928,22 +978,6 @@ def _seccion_generar_ruteo():
         return
     loader.empty()
 
-    # El maestro es pesado (~60k filas): se cachea el parseo en session_state
-    # para no releerlo en cada rerun de Streamlit.
-    cache_key = f"{archivo_maestro.name}:{archivo_maestro.size}"
-    if st.session_state.get("agr2_maestro_key") != cache_key:
-        loader_m = st.empty()
-        _render_loader(loader_m, "Leyendo maestro de clientes...", archivo_maestro.name)
-        try:
-            st.session_state["agr2_maestro_data"] = _leer_maestro_clientes(archivo_maestro)
-            st.session_state["agr2_maestro_key"] = cache_key
-        except Exception as e:
-            loader_m.empty()
-            st.error(f"Error al leer el maestro: {e}")
-            return
-        loader_m.empty()
-    maestro = st.session_state["agr2_maestro_data"]
-
     if habilidades_disponibles:
         render_tip(
             f"<strong>{len(habilidades_disponibles)}</strong> habilidades activas: "
@@ -952,16 +986,125 @@ def _seccion_generar_ruteo():
     else:
         render_tip("No hay vehículos/rutas activos. Todos los clientes quedarán como <strong>Fuera</strong>.", warning=True)
 
-    col_s1, col_s2 = st.columns(2)
-    with col_s1:
-        st.markdown(render_stat(len(df_bd), "Filas en hoja BD"), unsafe_allow_html=True)
-    with col_s2:
-        st.markdown(render_stat(len(maestro), "Clientes en maestro"), unsafe_allow_html=True)
+    st.markdown(render_stat(len(df_bd), "Filas en hoja BD"), unsafe_allow_html=True)
     render_label("Vista previa (primeras 10 filas)")
     st.dataframe(df_bd.head(10), use_container_width=True)
 
     if st.button("Procesar y generar archivos", type="primary", use_container_width=True, key="agr2_btn_procesar"):
-        _procesar_ruteo_2(df_bd, archivo.name, habilidades_disponibles, agencia, maestro)
+        _procesar_ruteo_2(df_bd, archivo.name, habilidades_disponibles, agencia)
+
+
+def _seccion_actualizar_maestro():
+    supabase = _get_supabase_client()
+
+    tabla_existe = True
+    try:
+        resp = supabase.table(_TABLA_MAESTRO).select(
+            "cliente,updated_at", count="exact"
+        ).order("updated_at", desc=True).limit(1).execute()
+        if resp.data:
+            ts = str(resp.data[0].get("updated_at", ""))[:16].replace("T", " ")
+            render_tip(
+                f"Maestro en Supabase: <strong>{resp.count:,}</strong> clientes — "
+                f"última actualización <strong>{ts}</strong> (UTC)"
+            )
+        else:
+            render_tip("El maestro aún no tiene datos. Sube el archivo para cargarlo.", warning=True)
+    except Exception:
+        tabla_existe = False
+        render_tip(
+            f"La tabla <code>{_TABLA_MAESTRO}</code> no existe. Créala en Supabase con: "
+            f"<code>{_SQL_CREAR_MAESTRO}</code>",
+            warning=True,
+        )
+
+    render_label("Archivo maestro (CLIENTES UNILEVER MTY Y TLA)")
+    archivo = st.file_uploader(
+        "Sube el maestro de clientes",
+        type=["xlsx", "xls"],
+        key="amc2_archivo",
+        label_visibility="collapsed",
+    )
+
+    if not archivo:
+        render_tip(
+            "Hoja <strong>raw_customer_imports</strong> con columnas "
+            "<code>customer_id_sap</code>, <code>tiempo_de_servicio</code>, "
+            "<code>horario_de_inicio</code>, <code>horario_de_fin</code>, "
+            "<code>latitud</code>, <code>longitud</code>. "
+            "Hace upsert por código de cliente: actualiza los existentes y agrega los nuevos."
+        )
+        return
+
+    loader = st.empty()
+    _render_loader(loader, "Leyendo maestro...", archivo.name)
+    try:
+        registros = _leer_maestro_clientes(archivo)
+    except Exception as e:
+        loader.empty()
+        st.error(f"Error al leer el maestro: {e}")
+        return
+    loader.empty()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(render_stat(len(registros), "Clientes únicos"), unsafe_allow_html=True)
+    with col2:
+        sin_coords = sum(1 for r in registros if r["latitud"] is None or r["longitud"] is None)
+        st.markdown(render_stat(sin_coords, "Sin coordenadas"), unsafe_allow_html=True)
+
+    if not registros:
+        render_tip("No se encontraron clientes válidos en el archivo.", warning=True)
+        return
+
+    render_label("Vista previa")
+    st.dataframe(pd.DataFrame(registros).head(20), use_container_width=True, hide_index=True)
+
+    if not st.button("Subir maestro a Supabase", type="primary", use_container_width=True,
+                     key="amc2_btn_subir", disabled=not tabla_existe):
+        return
+
+    ahora = datetime.now(timezone.utc).isoformat()
+    for r in registros:
+        r["updated_at"] = ahora
+
+    total = len(registros)
+    total_lotes = (total + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
+    barra, contador, contenedor_errores = create_progress_tracker(total, text="Subiendo maestro...")
+
+    loader2 = st.empty()
+    procesados = 0
+    errores = 0
+    for i in range(0, total, UPSERT_BATCH_SIZE):
+        lote_num = i // UPSERT_BATCH_SIZE + 1
+        lote = registros[i:i + UPSERT_BATCH_SIZE]
+        _render_loader(loader2, f"Subiendo lote {lote_num} de {total_lotes}...", f"{len(lote)} clientes")
+        try:
+            supabase.table(_TABLA_MAESTRO).upsert(lote, on_conflict="cliente").execute()
+        except Exception as e:
+            errores += len(lote)
+            with contenedor_errores:
+                render_error_item(f"Lote {lote_num}: {e}")
+        procesados += len(lote)
+        update_progress(barra, contador, procesados, total, text="Subiendo maestro...")
+
+    loader2.empty()
+    finish_progress(barra)
+
+    exitosos = total - errores
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(render_stat(exitosos, "Subidos OK"), unsafe_allow_html=True)
+    if errores:
+        with col2:
+            st.markdown(
+                render_stat(errores, "Con error",
+                            style="background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);"),
+                unsafe_allow_html=True,
+            )
+        render_tip(f"Hubo {errores} registros con error. Revisa los mensajes arriba.", warning=True)
+    else:
+        render_tip("Maestro actualizado correctamente.")
 
 
 def _seccion_actualizar_habilidades():
@@ -1321,21 +1464,25 @@ def pagina_asignacion_fija_uni_2():
         [
             "Selecciona la accion a ejecutar.",
             "Actualizar planeacion: sube el Excel y se filtran filas de Tláhuac y Monterrey (columna C).",
-            "Generar archivos de ruteo: sube el Monitoreo de Pedidos (hoja BD) y el maestro de clientes (ventanas y tiempo de servicio); genera Salida A (ruta fija) y Salida B (Fuera).",
+            "Actualizar maestro de clientes: sube CLIENTES UNILEVER MTY Y TLA a Supabase (ventanas, tiempo de servicio y coordenadas de respaldo).",
+            "Generar archivos de ruteo: sube el Monitoreo de Pedidos (hoja BD); genera Salida A (ruta fija) y Salida B (Fuera).",
             "Actualizar Habilidades: guarda la habilidad como número (ej 20020) con rotacion.",
-            "Tablas Supabase propias: smart_route_planeacion, smart_tlahuac, smart_monterrey.",
+            "Tablas Supabase propias: smart_route_planeacion, smart_maestro_clientes, smart_tlahuac, smart_monterrey.",
         ],
         "El proceso original (Asignacion Fija Uni) queda intacto como respaldo.",
     )
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab_m, tab2, tab3, tab4 = st.tabs([
         "Actualizar planeacion nacional",
+        "Actualizar maestro de clientes",
         "Generar archivos de ruteo",
         "Actualizar Habilidades",
         "Actualizar datos Simpli",
     ])
     with tab1:
         _seccion_actualizar_planeacion()
+    with tab_m:
+        _seccion_actualizar_maestro()
     with tab2:
         _seccion_generar_ruteo()
     with tab3:
