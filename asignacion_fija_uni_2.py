@@ -263,6 +263,39 @@ def _sr_headers(token):
     return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
 
 
+def _fetch_planes_fecha(token, fecha_str):
+    """GET /routes/plans/?start_date=&end_date= — planes de la fecha."""
+    try:
+        r = _requests.get(
+            f"{_API_SR}/routes/plans/?start_date={fecha_str}&end_date={fecha_str}",
+            headers=_sr_headers(token), timeout=60,
+        )
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code} — {r.text[:300]}"
+        data = r.json()
+        planes = data.get("results", []) if isinstance(data, dict) else data
+        return planes or [], None
+    except Exception as e:
+        return None, str(e)
+
+
+def _rutas_de_plan(plan):
+    """Set de uuids de ruta del plan (acepta routes/route_ids, dicts o strings)."""
+    rutas = plan.get("routes") or plan.get("route_ids") or []
+    return {r.get("id") if isinstance(r, dict) else r for r in rutas} - {None, ""}
+
+
+def _plan_label(plan):
+    return f'{plan.get("name") or "(sin nombre)"} — {len(_rutas_de_plan(plan))} rutas'
+
+
+def _ruta_pertenece(rid, rt, plan_id, rutas_plan):
+    """True si la ruta es del plan seleccionado (por route_ids o plan_id del response)."""
+    if not plan_id:
+        return True
+    return rid in rutas_plan or rt.get("plan_id") == plan_id
+
+
 def _fetch_vehiculos_plan(token, fecha_str):
     """GET /plans/{fecha}/vehicles/ — vehiculos del plan con sus rutas."""
     try:
@@ -345,9 +378,11 @@ def _cliente_de_visita(visita):
     return cliente
 
 
-def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota):
+def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None, rutas_plan=None):
     """Greedy 1:1: el par (ruta, vehiculo fijo) con mayor % de clientes gana primero.
-    Rutas con vehiculo especial o ya fijo quedan bloqueadas y su vehiculo sale del pool."""
+    Rutas con vehiculo especial o ya fijo quedan bloqueadas y su vehiculo sale del pool.
+    Solo considera rutas del plan seleccionado (plan_id/rutas_plan)."""
+    rutas_plan = rutas_plan or set()
     rutas = {}
     usados = set()
     for v in vehiculos_plan:
@@ -361,7 +396,7 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota):
             bloqueo = None
         for rt in v.get("routes", []):
             rid = rt.get("id")
-            if rid:
+            if rid and _ruta_pertenece(rid, rt, plan_id, rutas_plan):
                 rutas[rid] = {
                     "uuid": rid,
                     "veh_actual": v.get("name", "—"),
@@ -499,7 +534,8 @@ def _aplicar_asignacion(token, fecha_str, cambios, flota):
         render_tip("Todos los vehículos se asignaron correctamente. Vuelve a leer el plan para verificar.")
 
 
-def _actualizar_habilidades_desde_plan(token, fecha_str, agencia):
+def _actualizar_habilidades_desde_plan(token, fecha_str, agencia, plan_id=None, rutas_plan=None):
+    rutas_plan = rutas_plan or set()
     loader = st.empty()
     _render_loader(loader, "Leyendo plan...", fecha_str)
     vehiculos_plan, err = _fetch_vehiculos_plan(token, fecha_str)
@@ -518,8 +554,9 @@ def _actualizar_habilidades_desde_plan(token, fecha_str, agencia):
     for v in vehiculos_plan:
         num = _extraer_num_vehiculo(str(v.get("name") or ""))
         for rt in v.get("routes", []):
-            if rt.get("id"):
-                num_por_ruta[rt["id"]] = num
+            rid = rt.get("id")
+            if rid and _ruta_pertenece(rid, rt, plan_id, rutas_plan):
+                num_por_ruta[rid] = num
 
     # cliente -> conteo por vehiculo fijo (si quedo repartido gana el de mas visitas);
     # especiales y vehiculos genericos no actualizan habilidad
@@ -546,9 +583,10 @@ def _actualizar_habilidades_desde_plan(token, fecha_str, agencia):
         )
         return
 
+    n_visitas_plan = sum(1 for vis in visitas if vis.get("route") in num_por_ruta)
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown(render_stat(len(visitas), "Visitas en la fecha"), unsafe_allow_html=True)
+        st.markdown(render_stat(n_visitas_plan, "Visitas en el plan"), unsafe_allow_html=True)
     with col2:
         st.markdown(render_stat(len(pares), "Clientes a actualizar"), unsafe_allow_html=True)
 
@@ -585,6 +623,47 @@ def _seccion_asignar_vehiculos():
     )
     fecha_str = fecha.strftime("%Y-%m-%d")
 
+    if st.button("Buscar planes de la fecha", use_container_width=True, key="avp2_btn_planes"):
+        for k in ("avp2_planes", "avp2_planes_fecha", "avp2_propuestas", "avp2_flota",
+                  "avp2_usados", "avp2_conductores", "avp2_fecha_leida", "avp2_plan_leido"):
+            st.session_state.pop(k, None)
+        loader = st.empty()
+        _render_loader(loader, "Buscando planes...", fecha_str)
+        planes, err = _fetch_planes_fecha(token, fecha_str)
+        loader.empty()
+        if err:
+            st.error(f"Error al buscar planes: {err}")
+            return
+        if not planes:
+            render_tip("No hay planes en esa fecha.", warning=True)
+            return
+        st.session_state["avp2_planes"] = planes
+        st.session_state["avp2_planes_fecha"] = fecha_str
+
+    planes = st.session_state.get("avp2_planes")
+    if not planes or st.session_state.get("avp2_planes_fecha") != fecha_str:
+        render_tip(
+            "Rutea libre en Simpli (sin habilidades) y pulsa <strong>Buscar planes de la "
+            "fecha</strong> para elegir el plan a trabajar. Después, <strong>Leer plan y "
+            "proponer asignación</strong> cruza cada ruta con la planeación por el campo "
+            "<em>Notas</em> (cliente) y propone el vehículo fijo con mayor % de coincidencia "
+            "(asignación 1 a 1, gana el % más alto). Las rutas de especiales 1001FM/1001EV "
+            "no se tocan."
+        )
+        return
+
+    render_label("Plan")
+    idx_plan = st.selectbox(
+        "Plan",
+        range(len(planes)),
+        format_func=lambda i: _plan_label(planes[i]),
+        key="avp2_plan_sel",
+        label_visibility="collapsed",
+    )
+    plan_sel = planes[idx_plan]
+    plan_id = plan_sel.get("id")
+    rutas_plan = _rutas_de_plan(plan_sel)
+
     if cuenta == "Tláhuac":
         render_label("Vehículos activos este día")
         activos_txt = st.text_area(
@@ -614,7 +693,8 @@ def _seccion_asignar_vehiculos():
         )
 
     if st.button("Leer plan y proponer asignación", use_container_width=True, key="avp2_btn_leer"):
-        for k in ("avp2_propuestas", "avp2_flota", "avp2_usados", "avp2_conductores", "avp2_fecha_leida"):
+        for k in ("avp2_propuestas", "avp2_flota", "avp2_usados", "avp2_conductores",
+                  "avp2_fecha_leida", "avp2_plan_leido"):
             st.session_state.pop(k, None)
 
         loader = st.empty()
@@ -659,14 +739,18 @@ def _seccion_asignar_vehiculos():
         lookup = _fetch_planeacion_smart(supabase, clientes)
         loader.empty()
 
-        propuestas, usados = _proponer_asignacion(vehiculos_plan, visitas, lookup, flota)
+        propuestas, usados = _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id, rutas_plan)
+        if not propuestas:
+            st.error("El plan seleccionado no tiene rutas en la respuesta de la API.")
+            return
         st.session_state["avp2_propuestas"] = propuestas
         st.session_state["avp2_flota"] = flota
         st.session_state["avp2_usados"] = sorted(usados)
         st.session_state["avp2_conductores"] = conductores
         st.session_state["avp2_fecha_leida"] = fecha_str
+        st.session_state["avp2_plan_leido"] = plan_id
 
-    _subseccion_propuesta(token, fecha_str)
+    _subseccion_propuesta(token, fecha_str, plan_id)
 
     st.markdown("---")
     render_label("Actualizar habilidades desde el plan")
@@ -677,23 +761,23 @@ def _seccion_asignar_vehiculos():
         "Especiales y vehículos genéricos se omiten; los clientes nuevos se registran solos."
     )
     if st.button("Actualizar habilidades desde el plan", use_container_width=True, key="avp2_btn_feedback"):
-        _actualizar_habilidades_desde_plan(token, fecha_str, cuenta)
+        _actualizar_habilidades_desde_plan(token, fecha_str, cuenta, plan_id, rutas_plan)
 
 
-def _subseccion_propuesta(token, fecha_str):
+def _subseccion_propuesta(token, fecha_str, plan_id):
     propuestas = st.session_state.get("avp2_propuestas")
     if not propuestas:
         render_tip(
-            "Rutea libre en Simpli (sin habilidades) y, con el plan creado, pulsa "
-            "<strong>Leer plan y proponer asignación</strong>: cada ruta se cruza con la "
-            "planeación por el campo <em>Notas</em> (cliente) y se propone el vehículo fijo "
-            "con mayor % de coincidencia (asignación 1 a 1, gana el % más alto). "
-            "Las rutas de especiales 1001FM/1001EV no se tocan."
+            "Pulsa <strong>Leer plan y proponer asignación</strong> para generar la "
+            "propuesta de vehículos del plan seleccionado."
         )
         return
 
     if st.session_state["avp2_fecha_leida"] != fecha_str:
         render_tip("La fecha cambió desde la última lectura — vuelve a leer el plan.", warning=True)
+        return
+    if st.session_state.get("avp2_plan_leido") != plan_id:
+        render_tip("El plan seleccionado cambió desde la última lectura — vuelve a leer el plan.", warning=True)
         return
 
     flota = st.session_state["avp2_flota"]
