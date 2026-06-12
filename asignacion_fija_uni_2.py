@@ -721,17 +721,20 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
         if not m:
             clientes_sin_maestro.add(f["cliente"])
         ruta_num = None
-        esp = especial_por_cliente.get(f["cliente"])
-        if esp and esp in habilidades_disponibles:
-            # El Monitoreo del dia define los especiales: si col H trae
-            # 1001FM/1001EV (y esta activa), el cliente va a esa ruta.
-            ruta_num = esp
-        elif data:
-            for n in range(1, 5):
-                num = _num_habilidad(data.get(f"habilidad_{n}"))
-                if num and num in habilidades_disponibles:
-                    ruta_num = num
-                    break
+        # Clientes "VENTA PROSPECTO ..." no se actualizan: nunca van a
+        # Salida A, sus pedidos salen en Salida B (Fuera).
+        if not f["nombre"].strip().upper().startswith("VENTA PROSPECTO"):
+            esp = especial_por_cliente.get(f["cliente"])
+            if esp and esp in habilidades_disponibles:
+                # El Monitoreo del dia define los especiales: si col H trae
+                # 1001FM/1001EV (y esta activa), el cliente va a esa ruta.
+                ruta_num = esp
+            elif data:
+                for n in range(1, 5):
+                    num = _num_habilidad(data.get(f"habilidad_{n}"))
+                    if num and num in habilidades_disponibles:
+                        ruta_num = num
+                        break
 
         if ruta_num:
             # SALIDA A — ruta fija (dedup por cliente)
@@ -981,6 +984,7 @@ def _seccion_generar_ruteo():
             "La columna <strong>H (Ruta)</strong> define los clientes especiales del día: si trae "
             "<code>1001FM</code>/<code>1001EV</code> (y la especial está activa), el cliente va a esa ruta "
             "y la fila entra aunque su Ruteo no sea válido (ej. <code>IC NOW</code>). "
+            "Los clientes <strong>VENTA PROSPECTO</strong> nunca van a Salida A: sus pedidos salen en Salida B. "
             "Match por <strong>Código Cliente (col D)</strong> sin ceros ni <code>-MX01</code> "
             "contra la planeación. "
             "El <strong>maestro de clientes</strong> (cargado en Supabase) aporta ventanas horarias, "
