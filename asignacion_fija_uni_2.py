@@ -654,11 +654,18 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
     especiales_nums = {_num_habilidad(v) for v in ESPECIALES_MONTERREY}
     especial_por_cliente = {}  # cliente -> especial que el Monitoreo del dia le marca en col H
     for idx in range(len(df_bd)):
+        ruta_arch = (
+            _num_habilidad(str(df_bd.iat[idx, BD_COL_RUTA]).upper())
+            if df_bd.shape[1] > BD_COL_RUTA else None
+        )
+        # Una especial activa entra aunque su Ruteo no sea valido
+        # (ej. las filas 1001EV llegan con Ruteo "IC NOW").
+        es_especial = ruta_arch in especiales_nums and ruta_arch in habilidades_disponibles
         ruteo_val = (
             str(df_bd.iat[idx, BD_COL_RUTEO]).strip().upper()
             if df_bd.shape[1] > BD_COL_RUTEO else ""
         )
-        if ruteo_val not in RUTEO_VALIDOS:
+        if ruteo_val not in RUTEO_VALIDOS and not es_especial:
             clave = ruteo_val or "(vacío)"
             descartados[clave] = descartados.get(clave, 0) + 1
             continue
@@ -672,11 +679,7 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
         nombre = str(df_bd.iat[idx, BD_COL_NOMBRE]).strip() if df_bd.shape[1] > BD_COL_NOMBRE else ""
         cant = str(df_bd.iat[idx, BD_COL_CANT_PEDIDO]).strip() if df_bd.shape[1] > BD_COL_CANT_PEDIDO else ""
         total = str(df_bd.iat[idx, BD_COL_TOTAL_IMP]).strip() if df_bd.shape[1] > BD_COL_TOTAL_IMP else ""
-        ruta_arch = (
-            _num_habilidad(str(df_bd.iat[idx, BD_COL_RUTA]).upper())
-            if df_bd.shape[1] > BD_COL_RUTA else None
-        )
-        if ruta_arch in especiales_nums:
+        if es_especial:
             especial_por_cliente[match_code] = ruta_arch
         filas.append({
             "order": order_code, "cliente": match_code, "nombre": nombre,
@@ -976,7 +979,8 @@ def _seccion_generar_ruteo():
             "<strong>Ruteo (col I)</strong> sea <code>REP ELECT</code> o <code>PREVENTA</code> "
             "(el resto se reporta como descartado). "
             "La columna <strong>H (Ruta)</strong> define los clientes especiales del día: si trae "
-            "<code>1001FM</code>/<code>1001EV</code> (y la especial está activa), el cliente va a esa ruta. "
+            "<code>1001FM</code>/<code>1001EV</code> (y la especial está activa), el cliente va a esa ruta "
+            "y la fila entra aunque su Ruteo no sea válido (ej. <code>IC NOW</code>). "
             "Match por <strong>Código Cliente (col D)</strong> sin ceros ni <code>-MX01</code> "
             "contra la planeación. "
             "El <strong>maestro de clientes</strong> (cargado en Supabase) aporta ventanas horarias, "
