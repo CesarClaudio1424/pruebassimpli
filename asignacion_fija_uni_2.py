@@ -6,6 +6,7 @@ import unicodedata
 import io
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from utils import (
     render_header, render_guide, render_stat, render_label,
@@ -632,7 +633,7 @@ def _fetch_maestro_clientes(supabase, clientes):
     return datos
 
 
-def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
+def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia, modo_libre=False):
     loader = st.empty()
     supabase = _get_supabase_client()
 
@@ -736,7 +737,7 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
                         ruta_num = num
                         break
 
-        if ruta_num:
+        if ruta_num and not modo_libre:
             # SALIDA A — ruta fija (dedup por cliente)
             if f["cliente"] not in salida_a:
                 # maestro primero; planeacion solo para clientes que no estan en el
@@ -789,7 +790,11 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
             row_b["Latitud"] = lat if lat is not None else ""
             row_b["Longitud"] = lon if lon is not None else ""
             row_b["ID"] = f["order"]
-            row_b["Habilidades requeridas"] = "Fuera"
+            if modo_libre:
+                # En ruteo libre solo las especiales llevan habilidad; el resto va libre.
+                row_b["Habilidades requeridas"] = f"F{ruta_num}" if ruta_num else ""
+            else:
+                row_b["Habilidades requeridas"] = "Fuera"
             row_b["Carga 2"] = f["total"] if es_venta else 0
             row_b["Carga 3"] = f["cant"]
             row_b["Agencia"] = agencia
@@ -833,9 +838,16 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
     with col1:
         st.markdown(render_stat(total_filas, "Filas en BD"), unsafe_allow_html=True)
     with col2:
-        st.markdown(render_stat(len(df_a), "Ruta fija (Salida A)"), unsafe_allow_html=True)
+        if modo_libre:
+            st.markdown(render_stat(len(df_b), "Pedidos (ruteo libre)"), unsafe_allow_html=True)
+        else:
+            st.markdown(render_stat(len(df_a), "Ruta fija (Salida A)"), unsafe_allow_html=True)
     with col3:
-        st.markdown(render_stat(len(df_b), 'Fuera (Salida B)'), unsafe_allow_html=True)
+        if modo_libre:
+            n_esp = sum(1 for r in salida_b_rows if r["Habilidades requeridas"])
+            st.markdown(render_stat(n_esp, "Pedidos de especiales"), unsafe_allow_html=True)
+        else:
+            st.markdown(render_stat(len(df_b), 'Fuera (Salida B)'), unsafe_allow_html=True)
     with col4:
         st.markdown(
             render_stat(descartados_total, "Descartados",
@@ -859,6 +871,17 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
         st.dataframe(det, use_container_width=True, hide_index=True)
 
     base = nombre_original.rsplit(".", 1)[0]
+    if modo_libre:
+        st.download_button(
+            "Descargar Ruteo libre (RUTEO_DINAMICO)",
+            buffer_b,
+            file_name=f"{base}_ruteo_libre.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+            key="agr2_dl_libre",
+        )
+        return
     col_a, col_b = st.columns(2)
     with col_a:
         st.download_button(
@@ -905,9 +928,33 @@ def _seccion_generar_ruteo():
         label_visibility="collapsed",
     )
 
+    render_label("Modo de ruteo")
+    modo = st.radio(
+        "Modo de ruteo",
+        ["Con ruta fija (A/B)", "Ruteo libre (Smart 2)"],
+        horizontal=True,
+        key="agr2_modo",
+        label_visibility="collapsed",
+    )
+    modo_libre = modo == "Ruteo libre (Smart 2)"
+
     habilidades_disponibles = set()
 
-    if agencia == "Tláhuac":
+    if modo_libre:
+        render_label("Especiales activas este día")
+        cols_esp = st.columns(len(ESPECIALES_MONTERREY))
+        for col_esp, esp in zip(cols_esp, ESPECIALES_MONTERREY):
+            num_esp = _num_habilidad(esp)
+            with col_esp:
+                if st.checkbox(esp, key=f"agr2_esp_{num_esp}"):
+                    habilidades_disponibles.add(num_esp)
+        render_tip(
+            "Ruteo libre: se genera <strong>un solo archivo</strong> RUTEO_DINAMICO sin "
+            "habilidades — Simpli rutea con vehículos genéricos y los vehículos fijos se "
+            "asignan después en <em>Asignar vehículos al plan</em>. Las especiales activas "
+            "sí llevan su habilidad para quedar asignadas desde el ruteo."
+        )
+    elif agencia == "Tláhuac":
         render_label("Vehículos activos este día")
         vehiculos_txt = st.text_area(
             "Vehiculos",
@@ -1008,7 +1055,14 @@ def _seccion_generar_ruteo():
         return
     loader.empty()
 
-    if habilidades_disponibles:
+    if modo_libre:
+        if habilidades_disponibles:
+            render_tip(
+                "Especiales activas: "
+                + ", ".join(f"<code>{_ruta_nombre(n)}</code>" for n in sorted(habilidades_disponibles))
+                + " — el resto de los pedidos sale sin habilidad."
+            )
+    elif habilidades_disponibles:
         render_tip(
             f"<strong>{len(habilidades_disponibles)}</strong> habilidades activas: "
             + ", ".join(f"<code>{_ruta_nombre(n)}</code>" for n in sorted(habilidades_disponibles))
@@ -1021,7 +1075,7 @@ def _seccion_generar_ruteo():
     st.dataframe(df_bd.head(10), use_container_width=True)
 
     if st.button("Procesar y generar archivos", type="primary", use_container_width=True, key="agr2_btn_procesar"):
-        _procesar_ruteo_2(df_bd, archivo.name, habilidades_disponibles, agencia)
+        _procesar_ruteo_2(df_bd, archivo.name, habilidades_disponibles, agencia, modo_libre)
 
 
 def _seccion_actualizar_maestro():
@@ -1137,6 +1191,89 @@ def _seccion_actualizar_maestro():
         render_tip("Maestro actualizado correctamente.")
 
 
+def _aplicar_rotacion_habilidades(supabase, pares, agencia, nota_exito=""):
+    """Aplica rotacion (nueva a habilidad_1) y upsert en la planeacion.
+    pares: lista de {"cliente", "habilidad"}."""
+    loader2 = st.empty()
+    _render_loader(loader2, "Consultando habilidades actuales...", f"{len(pares):,} clientes")
+    clientes = [r["cliente"] for r in pares]
+    existentes_map = {}
+    for i in range(0, len(clientes), 500):
+        lote = clientes[i:i + 500]
+        try:
+            resp = supabase.table(_TABLA_PLANEACION).select(
+                "cliente,habilidad_1,habilidad_2,habilidad_3,habilidad_4"
+            ).in_("cliente", lote).execute()
+            for row in resp.data or []:
+                existentes_map[row["cliente"]] = row
+        except Exception as e:
+            st.warning(f"No se pudieron consultar habilidades existentes: {e}")
+    loader2.empty()
+
+    # Construir payload con rotacion
+    payload = []
+    for r in pares:
+        cliente = r["cliente"]
+        nueva_hab = r["habilidad"]
+        existente = existentes_map.get(cliente, {})
+        actuales = [
+            existente.get("habilidad_1"),
+            existente.get("habilidad_2"),
+            existente.get("habilidad_3"),
+            existente.get("habilidad_4"),
+        ]
+        rotada = _rotar_habilidades(actuales, nueva_hab)
+        payload.append({
+            "cliente": cliente,
+            "agencia": agencia,
+            "habilidad_1": rotada[0],
+            "habilidad_2": rotada[1],
+            "habilidad_3": rotada[2],
+            "habilidad_4": rotada[3],
+        })
+
+    total = len(payload)
+    total_lotes = (total + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
+    barra, contador, contenedor_errores = create_progress_tracker(total, text="Actualizando en Supabase...")
+
+    procesados = 0
+    errores = 0
+    loader3 = st.empty()
+    for i in range(0, total, UPSERT_BATCH_SIZE):
+        lote_num = i // UPSERT_BATCH_SIZE + 1
+        lote = payload[i:i + UPSERT_BATCH_SIZE]
+        _render_loader(loader3, f"Subiendo lote {lote_num} de {total_lotes}...", f"{len(lote)} registros")
+        try:
+            supabase.table(_TABLA_PLANEACION).upsert(lote, on_conflict="cliente").execute()
+        except Exception as e:
+            errores += len(lote)
+            with contenedor_errores:
+                render_error_item(f"Lote {lote_num}: {e}")
+        procesados += len(lote)
+        update_progress(barra, contador, procesados, total, text="Actualizando en Supabase...")
+
+    loader3.empty()
+    finish_progress(barra)
+
+    exitosos = total - errores
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(render_stat(exitosos, "Actualizados OK"), unsafe_allow_html=True)
+    if errores:
+        with col2:
+            st.markdown(
+                render_stat(errores, "Con error",
+                            style="background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);"),
+                unsafe_allow_html=True,
+            )
+        render_tip(f"Hubo {errores} registros con error. Revisa los mensajes arriba.", warning=True)
+    else:
+        msg = "Todos los registros se actualizaron correctamente"
+        if nota_exito:
+            msg += f" — {nota_exito}"
+        render_tip(msg + ".")
+
+
 def _seccion_actualizar_habilidades():
     render_label("Agencia")
     agencia = st.radio(
@@ -1227,86 +1364,10 @@ def _seccion_actualizar_habilidades():
         return
 
     supabase = _get_supabase_client()
-
-    # Leer habilidades actuales de Supabase para aplicar rotacion
-    loader2 = st.empty()
-    _render_loader(loader2, "Consultando habilidades actuales...", f"{len(unicos):,} clientes")
-    clientes = [r["cliente"] for r in unicos]
-    existentes_map = {}
-    for i in range(0, len(clientes), 500):
-        lote = clientes[i:i + 500]
-        try:
-            resp = supabase.table(_TABLA_PLANEACION).select(
-                "cliente,habilidad_1,habilidad_2,habilidad_3,habilidad_4"
-            ).in_("cliente", lote).execute()
-            for row in resp.data or []:
-                existentes_map[row["cliente"]] = row
-        except Exception as e:
-            st.warning(f"No se pudieron consultar habilidades existentes: {e}")
-    loader2.empty()
-
-    # Construir payload con rotacion
-    payload = []
-    for r in unicos:
-        cliente = r["cliente"]
-        nueva_hab = r["habilidad"]
-        existente = existentes_map.get(cliente, {})
-        actuales = [
-            existente.get("habilidad_1"),
-            existente.get("habilidad_2"),
-            existente.get("habilidad_3"),
-            existente.get("habilidad_4"),
-        ]
-        rotada = _rotar_habilidades(actuales, nueva_hab)
-        payload.append({
-            "cliente": cliente,
-            "agencia": agencia,
-            "habilidad_1": rotada[0],
-            "habilidad_2": rotada[1],
-            "habilidad_3": rotada[2],
-            "habilidad_4": rotada[3],
-        })
-
-    total = len(payload)
-    total_lotes = (total + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
-    barra, contador, contenedor_errores = create_progress_tracker(total, text="Actualizando en Supabase...")
-
-    procesados = 0
-    errores = 0
-    loader3 = st.empty()
-    for i in range(0, total, UPSERT_BATCH_SIZE):
-        lote_num = i // UPSERT_BATCH_SIZE + 1
-        lote = payload[i:i + UPSERT_BATCH_SIZE]
-        _render_loader(loader3, f"Subiendo lote {lote_num} de {total_lotes}...", f"{len(lote)} registros")
-        try:
-            supabase.table(_TABLA_PLANEACION).upsert(lote, on_conflict="cliente").execute()
-        except Exception as e:
-            errores += len(lote)
-            with contenedor_errores:
-                render_error_item(f"Lote {lote_num}: {e}")
-        procesados += len(lote)
-        update_progress(barra, contador, procesados, total, text="Actualizando en Supabase...")
-
-    loader3.empty()
-    finish_progress(barra)
-
-    exitosos = total - errores
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(render_stat(exitosos, "Actualizados OK"), unsafe_allow_html=True)
-    if errores:
-        with col2:
-            st.markdown(
-                render_stat(errores, "Con error",
-                            style="background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);"),
-                unsafe_allow_html=True,
-            )
-        render_tip(f"Hubo {errores} registros con error. Revisa los mensajes arriba.", warning=True)
-    else:
-        render_tip(
-            f"Todos los registros se actualizaron correctamente — "
-            f"<strong>{agencia}</strong> · {fecha_ruteo.strftime('%d/%m/%Y')}."
-        )
+    _aplicar_rotacion_habilidades(
+        supabase, unicos, agencia,
+        nota_exito=f"<strong>{agencia}</strong> · {fecha_ruteo.strftime('%d/%m/%Y')}",
+    )
 
 
 def _enviar_actualizaciones(token, visitas_put):
@@ -1488,6 +1549,543 @@ def _seccion_actualizar_datos_simpli():
         _enviar_actualizaciones(token, visitas_put)
 
 
+# ---------------------------------------------------------------------------
+# Tab — Asignar vehículos al plan (ruteo libre)
+# ---------------------------------------------------------------------------
+# Con el plan ruteado libre (vehículos genéricos), se lee el plan, se cruza el
+# campo notes (cliente) contra la planeación y se propone el vehículo fijo con
+# mayor % de coincidencia por ruta (asignación greedy 1 a 1).
+_API_SR = "https://api.simpliroute.com/v1"
+_ESPECIALES_NUMS = {_num_habilidad(v) for v in ESPECIALES_MONTERREY}
+_PUT_RUTA_WORKERS = 10
+_SIN_ASIGNAR = "(dejar como está)"
+
+
+def _sr_headers(token):
+    return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
+
+
+def _fetch_vehiculos_plan(token, fecha_str):
+    """GET /plans/{fecha}/vehicles/ — vehiculos del plan con sus rutas."""
+    try:
+        r = _requests.get(
+            f"{_API_SR}/plans/{fecha_str}/vehicles/",
+            headers=_sr_headers(token), timeout=60,
+        )
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code} — {r.text[:300]}"
+        return r.json() or [], None
+    except Exception as e:
+        return None, str(e)
+
+
+def _fetch_visitas_fecha(token, fecha_str):
+    try:
+        r = _requests.get(
+            f"{_API_SR}/routes/visits/?planned_date={fecha_str}",
+            headers=_sr_headers(token), timeout=120,
+        )
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code} — {r.text[:300]}"
+        data = r.json()
+        if not isinstance(data, list):
+            return None, f"Respuesta inesperada: {str(data)[:200]}"
+        return data, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _fetch_flota(token):
+    """GET /routes/vehicles/ — flota completa. Devuelve {num: {id, name, driver_id}}
+    solo con los vehiculos fijos (nombre R#####-MX##)."""
+    try:
+        r = _requests.get(
+            f"{_API_SR}/routes/vehicles/",
+            headers=_sr_headers(token), timeout=60,
+        )
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code} — {r.text[:300]}"
+        data = r.json()
+        lista = data.get("results", []) if isinstance(data, dict) else data
+        flota = {}
+        for v in lista or []:
+            num = _extraer_num_vehiculo(str(v.get("name") or ""))
+            if num and num not in flota:
+                flota[num] = {
+                    "id": v.get("id"),
+                    "name": v.get("name"),
+                    "driver_id": v.get("default_driver"),
+                }
+        return flota, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _fetch_conductores(token):
+    """GET /accounts/drivers/ — {id: nombre} para mostrar el conductor propuesto."""
+    try:
+        r = _requests.get(
+            f"{_API_SR}/accounts/drivers/",
+            headers=_sr_headers(token), timeout=60,
+        )
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+        lista = data.get("results", []) if isinstance(data, dict) else data
+        return {
+            u["id"]: u.get("name") or u.get("username") or ""
+            for u in lista or [] if u.get("id")
+        }
+    except Exception:
+        return {}
+
+
+def _cliente_de_visita(visita):
+    cliente = _limpiar_nota_cliente(str(visita.get("notes") or "").strip())
+    if not cliente or cliente.lower() in ("nan", "none", "null"):
+        return None
+    return cliente
+
+
+def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota):
+    """Greedy 1:1: el par (ruta, vehiculo fijo) con mayor % de clientes gana primero.
+    Rutas con vehiculo especial o ya fijo quedan bloqueadas y su vehiculo sale del pool."""
+    rutas = {}
+    usados = set()
+    for v in vehiculos_plan:
+        num_actual = _extraer_num_vehiculo(str(v.get("name") or ""))
+        if num_actual in _ESPECIALES_NUMS:
+            bloqueo = "especial — no se toca"
+        elif num_actual and num_actual in flota:
+            bloqueo = "ya tiene vehículo fijo"
+            usados.add(num_actual)
+        else:
+            bloqueo = None
+        for rt in v.get("routes", []):
+            rid = rt.get("id")
+            if rid:
+                rutas[rid] = {
+                    "uuid": rid,
+                    "veh_actual": v.get("name", "—"),
+                    "driver_actual": (v.get("driver") or {}).get("name", "—"),
+                    "bloqueo": bloqueo,
+                }
+
+    # clientes unicos y conteo de visitas por ruta
+    clientes_ruta = {}
+    visitas_ruta = {}
+    for vis in visitas:
+        rid = vis.get("route")
+        if not rid or rid not in rutas:
+            continue
+        visitas_ruta[rid] = visitas_ruta.get(rid, 0) + 1
+        cliente = _cliente_de_visita(vis)
+        if cliente:
+            clientes_ruta.setdefault(rid, set()).add(cliente)
+
+    candidatos = []
+    propuestas = []
+    for rid, info in rutas.items():
+        clientes = clientes_ruta.get(rid, set())
+        info.update({
+            "visitas": visitas_ruta.get(rid, 0),
+            "clientes": len(clientes),
+            "propuesto": None, "pct": None, "votos_num": None,
+        })
+        propuestas.append(info)
+        if info["bloqueo"] or not clientes:
+            continue
+        votos = {}
+        for c in clientes:
+            data = lookup.get(c)
+            num = _num_habilidad(data.get("habilidad_1")) if data else None
+            if num and num in flota and num not in _ESPECIALES_NUMS:
+                votos[num] = votos.get(num, 0) + 1
+        for num, n in votos.items():
+            candidatos.append((n / len(clientes), n, rid, num))
+
+    candidatos.sort(key=lambda t: (-t[0], -t[1]))
+    asignadas = set()
+    por_uuid = {p["uuid"]: p for p in propuestas}
+    for pct, n, rid, num in candidatos:
+        if rid in asignadas or num in usados:
+            continue
+        por_uuid[rid].update({"propuesto": num, "pct": pct, "votos_num": n})
+        asignadas.add(rid)
+        usados.add(num)
+    return propuestas, usados
+
+
+def _listar_rutas_completas(token, fecha_str):
+    """GET /routes/routes/?planned_date= — objetos completos para el PUT."""
+    rutas = []
+    url = f"{_API_SR}/routes/routes/?planned_date={fecha_str}"
+    try:
+        while url:
+            r = _requests.get(url, headers=_sr_headers(token), timeout=60)
+            if r.status_code != 200:
+                return None, f"HTTP {r.status_code} — {r.text[:300]}"
+            data = r.json()
+            if isinstance(data, list):
+                rutas.extend(data)
+                break
+            rutas.extend(data.get("results", []))
+            url = data.get("next")
+        return rutas, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _put_ruta_vehiculo(token, ruta_obj, veh_id, driver_id):
+    payload = dict(ruta_obj)
+    payload["vehicle"] = veh_id
+    if driver_id:
+        payload["driver"] = driver_id
+    url = f"{_API_SR}/routes/routes/{ruta_obj['id']}/"
+    try:
+        r = _requests.put(url, headers=_sr_headers(token), json=payload, timeout=60)
+        return r.status_code, r.text[:300]
+    except Exception as e:
+        return 0, str(e)
+
+
+def _aplicar_asignacion(token, fecha_str, cambios, flota):
+    loader = st.empty()
+    _render_loader(loader, "Consultando rutas del plan...", fecha_str)
+    rutas_full, err = _listar_rutas_completas(token, fecha_str)
+    loader.empty()
+    if err:
+        st.error(f"Error al consultar rutas: {err}")
+        return
+    por_id = {r.get("id"): r for r in rutas_full}
+
+    faltantes = [c for c in cambios if c["uuid"] not in por_id]
+    cambios = [c for c in cambios if c["uuid"] in por_id]
+
+    resultados = []
+    if cambios:
+        total = len(cambios)
+        barra = st.progress(0, text=f"Actualizando {total} rutas...")
+        with ThreadPoolExecutor(max_workers=_PUT_RUTA_WORKERS) as pool:
+            futuros = {
+                pool.submit(
+                    _put_ruta_vehiculo, token, por_id[c["uuid"]],
+                    flota[c["num"]]["id"], flota[c["num"]]["driver_id"],
+                ): c
+                for c in cambios
+            }
+            done = 0
+            for fut in as_completed(futuros):
+                resultados.append((futuros[fut],) + fut.result())
+                done += 1
+                barra.progress(done / total, text=f"Rutas actualizadas: {done}/{total}")
+        barra.empty()
+
+    ok = sum(1 for _, s, _ in resultados if s in (200, 201, 204))
+    errores = [(c, s, t) for c, s, t in resultados if s not in (200, 201, 204)]
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(render_stat(ok, "Rutas actualizadas"), unsafe_allow_html=True)
+    if errores or faltantes:
+        with col2:
+            st.markdown(
+                render_stat(len(errores) + len(faltantes), "Con error",
+                            style="background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);"),
+                unsafe_allow_html=True,
+            )
+    for c in faltantes:
+        render_error_item(f"Ruta {c['uuid']}: no apareció en /routes/routes/ de la fecha.")
+    for c, s, t in errores:
+        render_error_item(f"{c['veh_actual']} → {flota[c['num']]['name']}: HTTP {s} — {t}")
+    if not errores and not faltantes:
+        render_tip("Todos los vehículos se asignaron correctamente. Vuelve a leer el plan para verificar.")
+
+
+def _actualizar_habilidades_desde_plan(token, fecha_str, agencia):
+    loader = st.empty()
+    _render_loader(loader, "Leyendo plan...", fecha_str)
+    vehiculos_plan, err = _fetch_vehiculos_plan(token, fecha_str)
+    if err or not vehiculos_plan:
+        loader.empty()
+        st.error(f"No se pudo leer el plan: {err}" if err else "El plan no tiene rutas en esa fecha.")
+        return
+    _render_loader(loader, "Consultando visitas...", fecha_str)
+    visitas, err = _fetch_visitas_fecha(token, fecha_str)
+    loader.empty()
+    if err:
+        st.error(f"Error al consultar visitas: {err}")
+        return
+
+    num_por_ruta = {}
+    for v in vehiculos_plan:
+        num = _extraer_num_vehiculo(str(v.get("name") or ""))
+        for rt in v.get("routes", []):
+            if rt.get("id"):
+                num_por_ruta[rt["id"]] = num
+
+    # cliente -> conteo por vehiculo fijo (si quedo repartido gana el de mas visitas);
+    # especiales y vehiculos genericos no actualizan habilidad
+    conteos = {}
+    for vis in visitas:
+        num = num_por_ruta.get(vis.get("route"))
+        if not num or num in _ESPECIALES_NUMS:
+            continue
+        cliente = _cliente_de_visita(vis)
+        if not cliente:
+            continue
+        por_num = conteos.setdefault(cliente, {})
+        por_num[num] = por_num.get(num, 0) + 1
+
+    pares = [
+        {"cliente": c, "habilidad": max(nums, key=nums.get)}
+        for c, nums in conteos.items()
+    ]
+    if not pares:
+        render_tip(
+            "Ninguna visita del plan quedó en un vehículo fijo R#####-MX## "
+            "con cliente en Notas — no hay habilidades que actualizar.",
+            warning=True,
+        )
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(render_stat(len(visitas), "Visitas en la fecha"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(len(pares), "Clientes a actualizar"), unsafe_allow_html=True)
+
+    supabase = _get_supabase_client()
+    _aplicar_rotacion_habilidades(
+        supabase, pares, agencia,
+        nota_exito=f"<strong>{agencia}</strong> · plan {fecha_str}",
+    )
+
+
+def _seccion_asignar_vehiculos():
+    render_label("Cuenta")
+    cuenta = st.radio(
+        "Cuenta",
+        ["Tláhuac", "Monterrey"],
+        horizontal=True,
+        key="avp2_cuenta",
+        label_visibility="collapsed",
+    )
+    token_key = "token_tlahuac" if cuenta == "Tláhuac" else "token_monterrey"
+    try:
+        token = st.secrets["cuentas_unilever"][token_key].strip()
+    except Exception:
+        render_tip("Token no configurado en secrets.", warning=True)
+        return
+
+    render_label("Fecha del plan")
+    fecha = st.date_input(
+        "Fecha del plan",
+        value=date.today(),
+        key="avp2_fecha",
+        format="DD/MM/YYYY",
+        label_visibility="collapsed",
+    )
+    fecha_str = fecha.strftime("%Y-%m-%d")
+
+    if cuenta == "Tláhuac":
+        render_label("Vehículos activos este día")
+        activos_txt = st.text_area(
+            "Vehículos activos",
+            placeholder="Un vehículo por línea\nEj: R20020-MX01 ó 20020\nVacío = toda la flota R#####-MX## de la cuenta",
+            key="avp2_activos",
+            label_visibility="collapsed",
+            height=120,
+        )
+        nums_activos = {n for line in activos_txt.splitlines() if (n := _extraer_num_vehiculo(line))}
+    else:
+        render_label(f"Cuántas rutas (max {len(RUTAS_MONTERREY)})")
+        n_rutas = st.number_input(
+            "Rutas",
+            min_value=1,
+            max_value=len(RUTAS_MONTERREY),
+            value=min(18, len(RUTAS_MONTERREY)),
+            key="avp2_n_rutas",
+            label_visibility="collapsed",
+        )
+        nums_activos = {n for v in RUTAS_MONTERREY[:int(n_rutas)] if (n := _extraer_num_vehiculo(v))}
+
+    if nums_activos:
+        render_tip(
+            f"<strong>{len(nums_activos)}</strong> vehículos activos para el match: "
+            + ", ".join(f"<code>{_ruta_nombre(n)}</code>" for n in sorted(nums_activos))
+        )
+
+    if st.button("Leer plan y proponer asignación", use_container_width=True, key="avp2_btn_leer"):
+        for k in ("avp2_propuestas", "avp2_flota", "avp2_usados", "avp2_conductores", "avp2_fecha_leida"):
+            st.session_state.pop(k, None)
+
+        loader = st.empty()
+        _render_loader(loader, "Leyendo plan...", fecha_str)
+        vehiculos_plan, err = _fetch_vehiculos_plan(token, fecha_str)
+        if err or not vehiculos_plan:
+            loader.empty()
+            st.error(f"No se pudo leer el plan: {err}" if err else "El plan no tiene rutas en esa fecha.")
+            return
+
+        _render_loader(loader, "Consultando visitas...", fecha_str)
+        visitas, err = _fetch_visitas_fecha(token, fecha_str)
+        if err:
+            loader.empty()
+            st.error(f"Error al consultar visitas: {err}")
+            return
+
+        _render_loader(loader, "Consultando flota...")
+        flota, err = _fetch_flota(token)
+        if err or not flota:
+            loader.empty()
+            st.error(f"Error al consultar la flota: {err}" if err else "La cuenta no tiene vehículos R#####-MX##.")
+            return
+        if nums_activos:
+            sin_flota = sorted(nums_activos - set(flota))
+            flota = {n: v for n, v in flota.items() if n in nums_activos}
+            if sin_flota:
+                render_tip(
+                    "Vehículos activos que no están en la flota de Simpli (se ignoran): "
+                    + ", ".join(f"<code>{_ruta_nombre(n)}</code>" for n in sin_flota),
+                    warning=True,
+                )
+        if not flota:
+            loader.empty()
+            st.error("Ningún vehículo activo está en la flota de Simpli.")
+            return
+        conductores = _fetch_conductores(token)
+
+        clientes = sorted({c for vis in visitas if (c := _cliente_de_visita(vis))})
+        _render_loader(loader, "Consultando planeación...", f"{len(clientes):,} clientes")
+        supabase = _get_supabase_client()
+        lookup = _fetch_planeacion_smart(supabase, clientes)
+        loader.empty()
+
+        propuestas, usados = _proponer_asignacion(vehiculos_plan, visitas, lookup, flota)
+        st.session_state["avp2_propuestas"] = propuestas
+        st.session_state["avp2_flota"] = flota
+        st.session_state["avp2_usados"] = sorted(usados)
+        st.session_state["avp2_conductores"] = conductores
+        st.session_state["avp2_fecha_leida"] = fecha_str
+
+    _subseccion_propuesta(token, fecha_str)
+
+    st.markdown("---")
+    render_label("Actualizar habilidades desde el plan")
+    render_tip(
+        "Cuando el plan quede final (vehículos asignados y ajustes manuales hechos), "
+        "esto lee el plan de la fecha directo de la API y guarda en la planeación la ruta "
+        "donde quedó cada cliente (rotación: la nueva entra a <code>habilidad_1</code>). "
+        "Especiales y vehículos genéricos se omiten."
+    )
+    if st.button("Actualizar habilidades desde el plan", use_container_width=True, key="avp2_btn_feedback"):
+        _actualizar_habilidades_desde_plan(token, fecha_str, cuenta)
+
+
+def _subseccion_propuesta(token, fecha_str):
+    propuestas = st.session_state.get("avp2_propuestas")
+    if not propuestas:
+        render_tip(
+            "Rutea libre en Simpli (sin habilidades) y, con el plan creado, pulsa "
+            "<strong>Leer plan y proponer asignación</strong>: cada ruta se cruza con la "
+            "planeación por el campo <em>Notas</em> (cliente) y se propone el vehículo fijo "
+            "con mayor % de coincidencia (asignación 1 a 1, gana el % más alto). "
+            "Las rutas de especiales 1001FM/1001EV no se tocan."
+        )
+        return
+
+    if st.session_state["avp2_fecha_leida"] != fecha_str:
+        render_tip("La fecha cambió desde la última lectura — vuelve a leer el plan.", warning=True)
+        return
+
+    flota = st.session_state["avp2_flota"]
+    usados = set(st.session_state["avp2_usados"])
+    conductores = st.session_state["avp2_conductores"]
+
+    def _nombre_conductor(num):
+        d_id = flota[num]["driver_id"]
+        return conductores.get(d_id, "—") if d_id else "—"
+
+    sin_match = [p for p in propuestas if not p["bloqueo"] and not p["propuesto"]]
+    n_con = sum(1 for p in propuestas if p["propuesto"])
+    n_bloq = sum(1 for p in propuestas if p["bloqueo"])
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown(render_stat(len(propuestas), "Rutas en el plan"), unsafe_allow_html=True)
+    with col2:
+        st.markdown(render_stat(n_con, "Con propuesta"), unsafe_allow_html=True)
+    with col3:
+        st.markdown(
+            render_stat(len(sin_match), "Sin propuesta",
+                        style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);"),
+            unsafe_allow_html=True,
+        )
+    with col4:
+        st.markdown(render_stat(n_bloq, "Bloqueadas (especial/fija)"), unsafe_allow_html=True)
+
+    filas = []
+    for p in propuestas:
+        if p["bloqueo"]:
+            prop, conductor, match = f"({p['bloqueo']})", "—", "—"
+        elif p["propuesto"]:
+            prop = flota[p["propuesto"]]["name"]
+            conductor = _nombre_conductor(p["propuesto"])
+            match = f"{p['pct'] * 100:.0f}% ({p['votos_num']}/{p['clientes']})"
+        else:
+            prop, conductor, match = "—", "—", "—"
+        filas.append({
+            "Vehículo actual": p["veh_actual"],
+            "Conductor actual": p["driver_actual"],
+            "Vehículo propuesto": prop,
+            "Conductor propuesto": conductor,
+            "% match": match,
+            "Clientes": p["clientes"],
+            "Visitas": p["visitas"],
+        })
+    render_label("Propuesta de asignación")
+    st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+
+    manuales = {}
+    sobrantes = sorted(n for n in flota if n not in usados and n not in _ESPECIALES_NUMS)
+    if sin_match and sobrantes:
+        render_label("Rutas sin propuesta — asignación manual (opcional)")
+        opciones = [_SIN_ASIGNAR] + [flota[n]["name"] for n in sobrantes]
+        for p in sin_match:
+            sel = st.selectbox(
+                f"{p['veh_actual']} — {p['visitas']} visitas, {p['clientes']} clientes",
+                opciones,
+                key=f"avp2_manual_{p['uuid']}",
+            )
+            if sel != _SIN_ASIGNAR:
+                manuales[p["uuid"]] = _extraer_num_vehiculo(sel)
+
+        elegidos = list(manuales.values())
+        duplicados = {n for n in elegidos if elegidos.count(n) > 1}
+        if duplicados:
+            render_tip(
+                "Hay vehículos repetidos en la asignación manual: "
+                + ", ".join(flota[n]["name"] for n in sorted(duplicados)),
+                warning=True,
+            )
+            return
+
+    cambios = [
+        {"uuid": p["uuid"], "veh_actual": p["veh_actual"], "num": num}
+        for p in propuestas
+        if not p["bloqueo"] and (num := p["propuesto"] or manuales.get(p["uuid"]))
+    ]
+    if not cambios:
+        render_tip("No hay cambios por aplicar — ninguna ruta tiene vehículo propuesto o manual.")
+        return
+
+    if st.button(
+        f"Aplicar asignación en SimpliRoute ({len(cambios)} rutas)",
+        type="primary", use_container_width=True, key="avp2_btn_aplicar",
+    ):
+        _aplicar_asignacion(token, st.session_state["avp2_fecha_leida"], cambios, flota)
+
+
 def pagina_asignacion_fija_uni_2():
     render_header("Asignacion Fija Uni 2", "Smart Route — planeacion de visitas Unilever")
     render_guide(
@@ -1495,17 +2093,19 @@ def pagina_asignacion_fija_uni_2():
             "Selecciona la accion a ejecutar.",
             "Actualizar planeacion: sube el Excel y se filtran filas de Tláhuac y Monterrey (columna C).",
             "Actualizar maestro de clientes: sube CLIENTES UNILEVER MTY Y TLA a Supabase (ventanas, tiempo de servicio y coordenadas de respaldo).",
-            "Generar archivos de ruteo: sube el Monitoreo de Pedidos (hoja BD); genera Salida A (ruta fija) y Salida B (Fuera).",
+            "Generar archivos de ruteo: sube el Monitoreo de Pedidos (hoja BD); genera Salida A (ruta fija) y Salida B (Fuera), o un solo archivo en modo Ruteo libre.",
+            "Asignar vehículos al plan: con el plan ruteado libre, propone el vehículo fijo por % de match (greedy 1 a 1) y actualiza habilidades desde la API.",
             "Actualizar Habilidades: guarda la habilidad como número (ej 20020) con rotacion.",
             "Tablas Supabase propias: smart_route_planeacion, smart_maestro_clientes, smart_tlahuac, smart_monterrey.",
         ],
         "El proceso original (Asignacion Fija Uni) queda intacto como respaldo.",
     )
 
-    tab1, tab_m, tab2, tab3, tab4 = st.tabs([
+    tab1, tab_m, tab2, tab_v, tab3, tab4 = st.tabs([
         "Actualizar planeacion nacional",
         "Actualizar maestro de clientes",
         "Generar archivos de ruteo",
+        "Asignar vehículos al plan",
         "Actualizar Habilidades",
         "Actualizar datos Simpli",
     ])
@@ -1515,6 +2115,8 @@ def pagina_asignacion_fija_uni_2():
         _seccion_actualizar_maestro()
     with tab2:
         _seccion_generar_ruteo()
+    with tab_v:
+        _seccion_asignar_vehiculos()
     with tab3:
         _seccion_actualizar_habilidades()
     with tab4:
