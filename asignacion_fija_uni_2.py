@@ -1,3 +1,4 @@
+import io
 import re
 import streamlit as st
 import pandas as pd
@@ -597,6 +598,268 @@ def _actualizar_habilidades_desde_plan(token, fecha_str, agencia, plan_id=None, 
     )
 
 
+# ---------------------------------------------------------------------------
+# Archivo de especiales (ruta fija) — solo Monterrey
+# ---------------------------------------------------------------------------
+# A Simpli hay que decirle que clientes pertenecen a las rutas especiales
+# 1001FM/1001EV ANTES de rutear: se sube el Monitoreo de Pedidos (hoja BD) y
+# se genera el archivo de ruta fija solo con los clientes que marca la col H.
+_TABLA_MAESTRO = "smart_maestro_clientes"
+
+BD_SHEET = "BD"
+BD_COL_CODIGO_CLIENTE = 3  # D  Codigo Cliente (ej 0010757344-MX01)
+BD_COL_NOMBRE = 4          # E  Cliente (nombre)
+BD_COL_RUTA = 7            # H  Ruta (1001FM/1001EV marcan especiales del dia)
+
+# Formato "ruta fija" (Corte 1). La penultima columna (N) va sin encabezado.
+SALIDA_A_COLS = [
+    "customer_id_sap", "nombre", "tiempo_de_servicio", "horario_de_inicio",
+    "horario_de_fin", "latitud", "longitud", "Telefono", "tiene_ruta_fija",
+    "nombre_ruta", "secuencia_en_ruta_fija", "estado_de_consideracion",
+    "estado_de_ruta_especial_puebla", "", "Cliente",
+]
+
+
+def _limpiar_codigo_cliente(valor):
+    """'0010757344-MX01' -> '10757344'. Quita sufijo -MX## y ceros a la izquierda."""
+    s = str(valor).strip()
+    if not s:
+        return ""
+    s = s.split("-")[0]
+    s = s.lstrip("0")
+    return s
+
+
+def _fmt_hora(val, default):
+    s = str(val or "").strip()
+    if not s or s.lower() in ("none", "nan", "null"):
+        return default
+    partes = s.split(":")
+    if len(partes) == 2:
+        return f"{s}:00"
+    return s
+
+
+def _try_num(val):
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s or s.lower() in ("none", "nan", "null", ""):
+        return None
+    try:
+        f = float(s)
+        return int(f) if f == int(f) else f
+    except (ValueError, TypeError):
+        return None
+
+
+def _escribir_excel(df, sheet_name, num_cols=()):
+    """Escribe un df a xlsx, coercionando a numerico las columnas indicadas."""
+    df = df.copy()
+    for c in num_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+    buffer.seek(0)
+    return buffer
+
+
+def _fetch_maestro_clientes(supabase, clientes):
+    """Ventanas/tiempos/coords del maestro en Supabase (datos historicos).
+    Devuelve dict por cliente; None si la tabla no existe o falla la consulta."""
+    datos = {}
+    try:
+        for i in range(0, len(clientes), 500):
+            lote = clientes[i:i + 500]
+            resp = supabase.table(_TABLA_MAESTRO).select(
+                "cliente,tiempo_servicio,hora_inicio,hora_final,latitud,longitud"
+            ).in_("cliente", lote).execute()
+            for row in resp.data or []:
+                datos[row["cliente"]] = {
+                    "tiempo": row.get("tiempo_servicio"),
+                    "hora_inicio": row.get("hora_inicio") or "",
+                    "hora_final": row.get("hora_final") or "",
+                    "lat": row.get("latitud"),
+                    "lon": row.get("longitud"),
+                }
+    except Exception as e:
+        st.warning(f"No se pudo leer el maestro de Supabase: {e}")
+        return None
+    return datos
+
+
+def _fetch_planeacion_datos(supabase, clientes):
+    """Coordenadas y ventanas de respaldo desde la planeacion (datos historicos)."""
+    datos = {}
+    cols = "cliente,x,y,hora_inicio,hora_final,duracion"
+    chunk = 50
+    for i in range(0, len(clientes), chunk):
+        lote = clientes[i:i + chunk]
+        patrones = ",".join(f"cliente.ilike.{cod}*" for cod in lote)
+        try:
+            resp = supabase.table(_TABLA_PLANEACION).select(cols).or_(patrones).execute()
+            for row in resp.data or []:
+                clave = _limpiar_nota_cliente(str(row.get("cliente", "")))
+                if not clave:
+                    continue
+                existente = datos.get(clave)
+                # preferir filas con coordenadas si hay varias (ej con/sin sufijo)
+                if existente is None or (
+                    existente.get("x") in (None, "") and row.get("x") not in (None, "")
+                ):
+                    datos[clave] = row
+        except Exception as e:
+            st.warning(f"Error consultando Supabase: {e}")
+            return datos
+    return datos
+
+
+def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
+    loader = st.empty()
+    _render_loader(loader, "Filtrando clientes especiales...", f"{len(df_bd):,} filas en hoja BD")
+
+    clientes_esp = {}
+    for idx in range(len(df_bd)):
+        ruta_arch = _num_habilidad(str(df_bd.iat[idx, BD_COL_RUTA]).upper())
+        if ruta_arch not in especiales_activas:
+            continue
+        cliente = _limpiar_codigo_cliente(df_bd.iat[idx, BD_COL_CODIGO_CLIENTE])
+        if not cliente:
+            continue
+        nombre = str(df_bd.iat[idx, BD_COL_NOMBRE]).strip()
+        if nombre.upper().startswith("VENTA PROSPECTO"):
+            continue
+        clientes_esp.setdefault(cliente, {"nombre": nombre, "especial": ruta_arch})
+
+    if not clientes_esp:
+        loader.empty()
+        render_tip(
+            "La col H del Monitoreo no marca clientes de las especiales seleccionadas.",
+            warning=True,
+        )
+        return
+
+    clientes = list(clientes_esp)
+    _render_loader(loader, "Consultando datos de clientes...", f"{len(clientes)} clientes")
+    supabase = _get_supabase_client()
+    maestro = _fetch_maestro_clientes(supabase, clientes) or {}
+    datos_plan = _fetch_planeacion_datos(supabase, clientes)
+    loader.empty()
+
+    filas = []
+    sin_coords = 0
+    for cliente, info in clientes_esp.items():
+        m = maestro.get(cliente) or {}
+        data = datos_plan.get(cliente) or {}
+        dur = m.get("tiempo")
+        if dur in (None, ""):
+            dur = _try_num(data.get("duracion"))
+        lat = m.get("lat") if m.get("lat") is not None else data.get("x")
+        lon = m.get("lon") if m.get("lon") is not None else data.get("y")
+        if lat in (None, "") or lon in (None, ""):
+            sin_coords += 1
+        filas.append({
+            "customer_id_sap": cliente,
+            "nombre": info["nombre"],
+            "tiempo_de_servicio": dur if dur not in (None, "") else 15,
+            "horario_de_inicio": _fmt_hora(m.get("hora_inicio") or data.get("hora_inicio"), "08:00:00"),
+            "horario_de_fin": _fmt_hora(m.get("hora_final") or data.get("hora_final"), "20:00:00"),
+            "latitud": lat if lat is not None else "",
+            "longitud": lon if lon is not None else "",
+            "Telefono": "",
+            "tiene_ruta_fija": "enabled",
+            "nombre_ruta": _ruta_nombre(info["especial"]),
+            "secuencia_en_ruta_fija": "",
+            "estado_de_consideracion": "enabled",
+            "estado_de_ruta_especial_puebla": "disabled",
+            "": "",
+            "Cliente": cliente,
+        })
+
+    df_a = pd.DataFrame(filas, columns=SALIDA_A_COLS)
+    buffer = _escribir_excel(df_a, "Hoja1", num_cols=["tiempo_de_servicio", "latitud", "longitud"])
+
+    base = nombre_original.rsplit(".", 1)[0]
+    conteo = {}
+    for info in clientes_esp.values():
+        conteo[info["especial"]] = conteo.get(info["especial"], 0) + 1
+    st.session_state["avp2_esp_bytes"] = buffer.getvalue()
+    st.session_state["avp2_esp_name"] = f"{base}_especiales_ruta_fija.xlsx"
+    st.session_state["avp2_esp_stats"] = {"conteo": conteo, "sin_coords": sin_coords}
+
+
+def _subseccion_archivo_especiales():
+    with st.expander("Archivo de especiales 1001FM/1001EV (ruta fija) — antes de rutear"):
+        render_tip(
+            "A Simpli hay que indicarle qué clientes pertenecen a las rutas especiales "
+            "<strong>antes</strong> de rutear. Sube el Monitoreo de Pedidos (hoja BD): "
+            "se toman los clientes que la <strong>col H</strong> marca como 1001FM/1001EV "
+            "y se genera el archivo de ruta fija para importar en Simpli."
+        )
+
+        cols_esp = st.columns(len(ESPECIALES_MONTERREY))
+        activas = set()
+        for col_esp, esp in zip(cols_esp, ESPECIALES_MONTERREY):
+            num_esp = _num_habilidad(esp)
+            with col_esp:
+                if st.checkbox(esp, value=True, key=f"avp2_esp_{num_esp}"):
+                    activas.add(num_esp)
+
+        archivo = st.file_uploader(
+            "Monitoreo de Pedidos (hoja BD)",
+            type=["xlsx", "xls"],
+            key="avp2_esp_archivo",
+        )
+
+        if archivo and not activas:
+            render_tip("Selecciona al menos una especial activa.", warning=True)
+
+        if archivo and activas and st.button(
+            "Generar archivo de especiales", use_container_width=True, key="avp2_esp_btn",
+        ):
+            df_bd = None
+            try:
+                df_bd = pd.read_excel(archivo, sheet_name=BD_SHEET, dtype=str, header=0).fillna("")
+            except ValueError:
+                st.error(f"El archivo no contiene la hoja '{BD_SHEET}'.")
+            except Exception as e:
+                st.error(f"Error al leer el archivo: {e}")
+            if df_bd is not None:
+                if df_bd.shape[1] <= BD_COL_RUTA:
+                    st.error("El archivo no tiene columna H (Ruta).")
+                else:
+                    _generar_archivo_especiales(df_bd, archivo.name, activas)
+
+        if st.session_state.get("avp2_esp_bytes"):
+            stats = st.session_state.get("avp2_esp_stats") or {}
+            conteo = stats.get("conteo") or {}
+            if conteo:
+                render_tip(
+                    "Clientes por especial: "
+                    + " · ".join(
+                        f"<code>{_ruta_nombre(k)}</code>: <strong>{v}</strong>"
+                        for k, v in sorted(conteo.items())
+                    )
+                )
+            if stats.get("sin_coords"):
+                render_tip(
+                    f"{stats['sin_coords']} clientes sin coordenadas en Supabase — "
+                    "salen en blanco en el archivo.",
+                    warning=True,
+                )
+            st.download_button(
+                "Descargar archivo de especiales (ruta fija)",
+                st.session_state["avp2_esp_bytes"],
+                file_name=st.session_state["avp2_esp_name"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+                key="avp2_esp_dl",
+            )
+
+
 def _seccion_asignar_vehiculos():
     render_label("Cuenta")
     cuenta = st.radio(
@@ -612,6 +875,9 @@ def _seccion_asignar_vehiculos():
     except Exception:
         render_tip("Token no configurado en secrets.", warning=True)
         return
+
+    if cuenta == "Monterrey":
+        _subseccion_archivo_especiales()
 
     render_label("Fecha del plan")
     fecha = st.date_input(
@@ -872,7 +1138,8 @@ def pagina_asignacion_fija_uni_2():
     render_header("Asignacion Fija Uni 2", "Smart Route — asignacion de vehiculos Unilever")
     render_guide(
         [
-            "Rutea libre en Simpli (vehículos genéricos, sin zonas ni habilidades); las especiales 1001FM/1001EV ya van asignadas desde el ruteo.",
+            "Monterrey: antes de rutear, genera el archivo de especiales (ruta fija) desde el Monitoreo para indicarle a Simpli los clientes de 1001FM/1001EV.",
+            "Rutea libre en Simpli (vehículos genéricos, sin zonas ni habilidades); las especiales ya van asignadas desde el ruteo.",
             "Indica los vehículos activos del día: listado en Tláhuac, cantidad de rutas en Monterrey.",
             "Leer plan: cruza el campo Notas (cliente) contra la planeación y propone el vehículo fijo con mayor % de match (asignación 1 a 1).",
             "Aplicar: actualiza vehículo y conductor de cada ruta vía PUT.",
