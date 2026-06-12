@@ -719,11 +719,12 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
         if ruta_num:
             # SALIDA A — ruta fija (dedup por cliente)
             if f["cliente"] not in salida_a:
+                # maestro primero; planeacion solo para clientes que no estan en el
                 dur = m.get("tiempo")
                 if dur is None:
                     dur = data.get("duracion")
-                lat = data.get("x") if data.get("x") is not None else m.get("lat")
-                lon = data.get("y") if data.get("y") is not None else m.get("lon")
+                lat = m.get("lat") if m.get("lat") is not None else data.get("x")
+                lon = m.get("lon") if m.get("lon") is not None else data.get("y")
                 salida_a[f["cliente"]] = {
                     "customer_id_sap": f["cliente"],
                     "nombre": f["nombre"],
@@ -743,14 +744,19 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
                 }
         else:
             # SALIDA B — Fuera (por pedido)
+            # maestro primero; planeacion solo para clientes que no estan en el
             titulo = f["nombre"]
             direccion = (data.get("direccion") or "") if data else ""
-            lat = data.get("x") if (data and data.get("x") is not None) else m.get("lat")
-            lon = data.get("y") if (data and data.get("y") is not None) else m.get("lon")
+            lat = m.get("lat") if m.get("lat") is not None else (data.get("x") if data else None)
+            lon = m.get("lon") if m.get("lon") is not None else (data.get("y") if data else None)
             es_venta = f["tipo"].strip().lower() == "sales order"
-            hora_ini = _fmt_hora(m.get("hora_inicio"), "08:00:00")
-            hora_fin = _fmt_hora(m.get("hora_final"), "20:00:00")
-            tiempo = m.get("tiempo") if m.get("tiempo") is not None else 15
+            hora_ini = _fmt_hora(m.get("hora_inicio") or (data.get("hora_inicio") if data else None), "08:00:00")
+            hora_fin = _fmt_hora(m.get("hora_final") or (data.get("hora_final") if data else None), "20:00:00")
+            tiempo = m.get("tiempo")
+            if tiempo is None:
+                tiempo = _try_num(data.get("duracion")) if data else None
+            if tiempo is None:
+                tiempo = 15
 
             row_b = {c: "" for c in RUTEO_DINAMICO_COLS}
             row_b["Titulo"] = titulo
