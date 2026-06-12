@@ -718,30 +718,34 @@ def _fetch_planeacion_datos(supabase, clientes):
 
 def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
     loader = st.empty()
-    _render_loader(loader, "Filtrando clientes especiales...", f"{len(df_bd):,} filas en hoja BD")
+    _render_loader(loader, "Clasificando clientes del día...", f"{len(df_bd):,} filas en hoja BD")
 
-    clientes_esp = {}
+    # Todos los clientes del Monitoreo entran al archivo: con especial activa
+    # van enabled + nombre_ruta; el resto va disabled para borrar cualquier
+    # ruta fija que les haya quedado de dias anteriores.
+    clientes_dia = {}
     for idx in range(len(df_bd)):
         ruta_arch = _num_habilidad(str(df_bd.iat[idx, BD_COL_RUTA]).upper())
-        if ruta_arch not in especiales_activas:
-            continue
+        especial = ruta_arch if ruta_arch in especiales_activas else None
         cliente = _limpiar_codigo_cliente(df_bd.iat[idx, BD_COL_CODIGO_CLIENTE])
         if not cliente:
             continue
         nombre = str(df_bd.iat[idx, BD_COL_NOMBRE]).strip()
         if nombre.upper().startswith("VENTA PROSPECTO"):
             continue
-        clientes_esp.setdefault(cliente, {"nombre": nombre, "especial": ruta_arch})
+        previo = clientes_dia.get(cliente)
+        if previo is None:
+            clientes_dia[cliente] = {"nombre": nombre, "especial": especial}
+        elif especial and not previo["especial"]:
+            # si algun pedido del cliente marca especial activa, esa gana
+            previo["especial"] = especial
 
-    if not clientes_esp:
+    if not clientes_dia:
         loader.empty()
-        render_tip(
-            "La col H del Monitoreo no marca clientes de las especiales seleccionadas.",
-            warning=True,
-        )
+        render_tip("El Monitoreo no trae clientes válidos en la hoja BD.", warning=True)
         return
 
-    clientes = list(clientes_esp)
+    clientes = list(clientes_dia)
     _render_loader(loader, "Consultando datos de clientes...", f"{len(clientes)} clientes")
     supabase = _get_supabase_client()
     maestro = _fetch_maestro_clientes(supabase, clientes) or {}
@@ -750,7 +754,7 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
 
     filas = []
     sin_coords = 0
-    for cliente, info in clientes_esp.items():
+    for cliente, info in clientes_dia.items():
         m = maestro.get(cliente) or {}
         data = datos_plan.get(cliente) or {}
         dur = m.get("tiempo")
@@ -760,6 +764,7 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
         lon = m.get("lon") if m.get("lon") is not None else data.get("y")
         if lat in (None, "") or lon in (None, ""):
             sin_coords += 1
+        es_especial = bool(info["especial"])
         filas.append({
             "customer_id_sap": cliente,
             "nombre": info["nombre"],
@@ -769,8 +774,8 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
             "latitud": lat if lat is not None else "",
             "longitud": lon if lon is not None else "",
             "Telefono": "",
-            "tiene_ruta_fija": "enabled",
-            "nombre_ruta": _ruta_nombre(info["especial"]),
+            "tiene_ruta_fija": "enabled" if es_especial else "disabled",
+            "nombre_ruta": _ruta_nombre(info["especial"]) if es_especial else "",
             "secuencia_en_ruta_fija": "",
             "estado_de_consideracion": "enabled",
             "estado_de_ruta_especial_puebla": "disabled",
@@ -783,11 +788,17 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
 
     base = nombre_original.rsplit(".", 1)[0]
     conteo = {}
-    for info in clientes_esp.values():
-        conteo[info["especial"]] = conteo.get(info["especial"], 0) + 1
+    n_disabled = 0
+    for info in clientes_dia.values():
+        if info["especial"]:
+            conteo[info["especial"]] = conteo.get(info["especial"], 0) + 1
+        else:
+            n_disabled += 1
     st.session_state["avp2_esp_bytes"] = buffer.getvalue()
     st.session_state["avp2_esp_name"] = f"{base}_especiales_ruta_fija.xlsx"
-    st.session_state["avp2_esp_stats"] = {"conteo": conteo, "sin_coords": sin_coords}
+    st.session_state["avp2_esp_stats"] = {
+        "conteo": conteo, "disabled": n_disabled, "sin_coords": sin_coords,
+    }
 
 
 def _subseccion_archivo_especiales():
@@ -795,8 +806,10 @@ def _subseccion_archivo_especiales():
         render_tip(
             "A Simpli hay que indicarle qué clientes pertenecen a las rutas especiales "
             "<strong>antes</strong> de rutear. Sube el Monitoreo de Pedidos (hoja BD): "
-            "se toman los clientes que la <strong>col H</strong> marca como 1001FM/1001EV "
-            "y se genera el archivo de ruta fija para importar en Simpli."
+            "el archivo incluye <strong>todos los clientes del día</strong> — los que la "
+            "<strong>col H</strong> marca como especial activa van <code>enabled</code> con "
+            "su ruta, y el resto va <code>disabled</code> para borrar cualquier ruta fija "
+            "que les haya quedado de días anteriores."
         )
 
         cols_esp = st.columns(len(ESPECIALES_MONTERREY))
@@ -814,9 +827,13 @@ def _subseccion_archivo_especiales():
         )
 
         if archivo and not activas:
-            render_tip("Selecciona al menos una especial activa.", warning=True)
+            render_tip(
+                "Sin especiales seleccionadas: todos los clientes saldrán en "
+                "<code>disabled</code> (solo limpieza de rutas fijas previas).",
+                warning=True,
+            )
 
-        if archivo and activas and st.button(
+        if archivo and st.button(
             "Generar archivo de especiales", use_container_width=True, key="avp2_esp_btn",
         ):
             df_bd = None
@@ -835,13 +852,17 @@ def _subseccion_archivo_especiales():
         if st.session_state.get("avp2_esp_bytes"):
             stats = st.session_state.get("avp2_esp_stats") or {}
             conteo = stats.get("conteo") or {}
-            if conteo:
+            partes = [
+                f"<code>{_ruta_nombre(k)}</code>: <strong>{v}</strong>"
+                for k, v in sorted(conteo.items())
+            ]
+            partes.append(f"Sin especial (disabled): <strong>{stats.get('disabled', 0)}</strong>")
+            render_tip("Clientes en el archivo — " + " · ".join(partes))
+            if not conteo:
                 render_tip(
-                    "Clientes por especial: "
-                    + " · ".join(
-                        f"<code>{_ruta_nombre(k)}</code>: <strong>{v}</strong>"
-                        for k, v in sorted(conteo.items())
-                    )
+                    "Ningún cliente quedó en especiales — el archivo solo limpia "
+                    "rutas fijas previas.",
+                    warning=True,
                 )
             if stats.get("sin_coords"):
                 render_tip(
