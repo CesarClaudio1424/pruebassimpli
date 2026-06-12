@@ -426,6 +426,7 @@ BD_COL_CODIGO = 0          # A  Codigo (codigo de pedido, ej MOBMX...)
 BD_COL_TIPO = 1            # B  Tipo (Sales order / otros)
 BD_COL_CODIGO_CLIENTE = 3  # D  Codigo Cliente (ej 0010757344-MX01)
 BD_COL_NOMBRE = 4          # E  Cliente (nombre del cliente -> nombre/Titulo)
+BD_COL_RUTA = 7            # H  Ruta (numero de ruta; 1001FM/1001EV marcan especiales del dia)
 BD_COL_RUTEO = 8           # I  Ruteo (REP ELECT / PREVENTA / ...)
 BD_COL_CANT_PEDIDO = 13    # N  Cant. Pedido  -> Carga 3
 BD_COL_TOTAL_IMP = 17      # R  Total + Impuestos -> Carga 2
@@ -650,6 +651,8 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
     # 1. Filtro por Ruteo (col I) y armado de filas
     filas = []
     descartados = {}
+    especiales_nums = {_num_habilidad(v) for v in ESPECIALES_MONTERREY}
+    especial_por_cliente = {}  # cliente -> especial que el Monitoreo del dia le marca en col H
     for idx in range(len(df_bd)):
         ruteo_val = (
             str(df_bd.iat[idx, BD_COL_RUTEO]).strip().upper()
@@ -669,6 +672,12 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
         nombre = str(df_bd.iat[idx, BD_COL_NOMBRE]).strip() if df_bd.shape[1] > BD_COL_NOMBRE else ""
         cant = str(df_bd.iat[idx, BD_COL_CANT_PEDIDO]).strip() if df_bd.shape[1] > BD_COL_CANT_PEDIDO else ""
         total = str(df_bd.iat[idx, BD_COL_TOTAL_IMP]).strip() if df_bd.shape[1] > BD_COL_TOTAL_IMP else ""
+        ruta_arch = (
+            _num_habilidad(str(df_bd.iat[idx, BD_COL_RUTA]).upper())
+            if df_bd.shape[1] > BD_COL_RUTA else None
+        )
+        if ruta_arch in especiales_nums:
+            especial_por_cliente[match_code] = ruta_arch
         filas.append({
             "order": order_code, "cliente": match_code, "nombre": nombre,
             "tipo": tipo, "cant": cant, "total": total,
@@ -709,7 +718,12 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
         if not m:
             clientes_sin_maestro.add(f["cliente"])
         ruta_num = None
-        if data:
+        esp = especial_por_cliente.get(f["cliente"])
+        if esp and esp in habilidades_disponibles:
+            # El Monitoreo del dia define los especiales: si col H trae
+            # 1001FM/1001EV (y esta activa), el cliente va a esa ruta.
+            ruta_num = esp
+        elif data:
             for n in range(1, 5):
                 num = _num_habilidad(data.get(f"habilidad_{n}"))
                 if num and num in habilidades_disponibles:
@@ -722,15 +736,15 @@ def _procesar_ruteo_2(df_bd, nombre_original, habilidades_disponibles, agencia):
                 # maestro primero; planeacion solo para clientes que no estan en el
                 dur = m.get("tiempo")
                 if dur is None:
-                    dur = data.get("duracion")
-                lat = m.get("lat") if m.get("lat") is not None else data.get("x")
-                lon = m.get("lon") if m.get("lon") is not None else data.get("y")
+                    dur = data.get("duracion") if data else None
+                lat = m.get("lat") if m.get("lat") is not None else (data.get("x") if data else None)
+                lon = m.get("lon") if m.get("lon") is not None else (data.get("y") if data else None)
                 salida_a[f["cliente"]] = {
                     "customer_id_sap": f["cliente"],
                     "nombre": f["nombre"],
                     "tiempo_de_servicio": dur if (dur not in (None, "")) else 15,
-                    "horario_de_inicio": _fmt_hora(m.get("hora_inicio") or data.get("hora_inicio"), "08:00:00"),
-                    "horario_de_fin": _fmt_hora(m.get("hora_final") or data.get("hora_final"), "20:00:00"),
+                    "horario_de_inicio": _fmt_hora(m.get("hora_inicio") or (data.get("hora_inicio") if data else None), "08:00:00"),
+                    "horario_de_fin": _fmt_hora(m.get("hora_final") or (data.get("hora_final") if data else None), "20:00:00"),
                     "latitud": lat if lat is not None else "",
                     "longitud": lon if lon is not None else "",
                     "Telefono": "",
@@ -961,6 +975,8 @@ def _seccion_generar_ruteo():
             "Del Monitoreo se usa <strong>solo la hoja BD</strong>. Se toman las filas cuyo "
             "<strong>Ruteo (col I)</strong> sea <code>REP ELECT</code> o <code>PREVENTA</code> "
             "(el resto se reporta como descartado). "
+            "La columna <strong>H (Ruta)</strong> define los clientes especiales del día: si trae "
+            "<code>1001FM</code>/<code>1001EV</code> (y la especial está activa), el cliente va a esa ruta. "
             "Match por <strong>Código Cliente (col D)</strong> sin ceros ni <code>-MX01</code> "
             "contra la planeación. "
             "El <strong>maestro de clientes</strong> (cargado en Supabase) aporta ventanas horarias, "
