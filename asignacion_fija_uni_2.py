@@ -603,7 +603,10 @@ def _actualizar_habilidades_desde_plan(token, fecha_str, agencia, plan_id=None, 
 # ---------------------------------------------------------------------------
 # A Simpli hay que decirle que clientes pertenecen a las rutas especiales
 # 1001FM/1001EV ANTES de rutear: se sube el Monitoreo de Pedidos (hoja BD) y
-# se genera el archivo de ruta fija solo con los clientes que marca la col H.
+# se genera el archivo de ruta fija con TODOS los clientes Monterrey registrados
+# (maestro de clientes cruzado con la planeacion Monterrey): los que la col H
+# marca como especial activa van enabled + su ruta, y el resto va disabled para
+# borrar cualquier ruta fija que les haya quedado de dias previos.
 _TABLA_MAESTRO = "smart_maestro_clientes"
 
 BD_SHEET = "BD"
@@ -666,26 +669,67 @@ def _escribir_excel(df, sheet_name, num_cols=()):
     return buffer
 
 
-def _fetch_maestro_clientes(supabase, clientes):
-    """Ventanas/tiempos/coords del maestro en Supabase (datos historicos).
-    Devuelve dict por cliente; None si la tabla no existe o falla la consulta."""
+def _fetch_maestro_completo(supabase):
+    """Trae TODO el maestro de clientes (paginado). Devuelve dict por cliente
+    con nombre/tiempo/ventanas/coords. None si la tabla no existe o falla."""
     datos = {}
+    paso = 1000
+    inicio = 0
     try:
-        for i in range(0, len(clientes), 500):
-            lote = clientes[i:i + 500]
-            resp = supabase.table(_TABLA_MAESTRO).select(
-                "cliente,tiempo_servicio,hora_inicio,hora_final,latitud,longitud"
-            ).in_("cliente", lote).execute()
-            for row in resp.data or []:
-                datos[row["cliente"]] = {
-                    "tiempo": row.get("tiempo_servicio"),
-                    "hora_inicio": row.get("hora_inicio") or "",
-                    "hora_final": row.get("hora_final") or "",
-                    "lat": row.get("latitud"),
-                    "lon": row.get("longitud"),
-                }
+        while True:
+            resp = (
+                supabase.table(_TABLA_MAESTRO)
+                .select("cliente,nombre,tiempo_servicio,hora_inicio,hora_final,latitud,longitud")
+                .range(inicio, inicio + paso - 1)
+                .execute()
+            )
+            filas = resp.data or []
+            for row in filas:
+                cid = row.get("cliente")
+                if cid:
+                    datos[cid] = {
+                        "nombre": row.get("nombre") or "",
+                        "tiempo": row.get("tiempo_servicio"),
+                        "hora_inicio": row.get("hora_inicio") or "",
+                        "hora_final": row.get("hora_final") or "",
+                        "lat": row.get("latitud"),
+                        "lon": row.get("longitud"),
+                    }
+            if len(filas) < paso:
+                break
+            inicio += paso
     except Exception as e:
         st.warning(f"No se pudo leer el maestro de Supabase: {e}")
+        return None
+    return datos
+
+
+def _fetch_clientes_monterrey(supabase):
+    """Clientes registrados de Monterrey desde smart_route_planeacion (agencia).
+    Devuelve dict {cliente_limpio: {x, y, hora_inicio, hora_final, duracion}}.
+    None si falla la consulta."""
+    datos = {}
+    cols = "cliente,x,y,hora_inicio,hora_final,duracion"
+    paso = 1000
+    inicio = 0
+    try:
+        while True:
+            resp = (
+                supabase.table(_TABLA_PLANEACION).select(cols)
+                .eq("agencia", "Monterrey")
+                .range(inicio, inicio + paso - 1)
+                .execute()
+            )
+            filas = resp.data or []
+            for row in filas:
+                clave = _limpiar_nota_cliente(str(row.get("cliente", "")))
+                if clave and clave not in datos:
+                    datos[clave] = row
+            if len(filas) < paso:
+                break
+            inicio += paso
+    except Exception as e:
+        st.warning(f"No se pudo leer la planeación Monterrey: {e}")
         return None
     return datos
 
@@ -718,45 +762,59 @@ def _fetch_planeacion_datos(supabase, clientes):
 
 def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
     loader = st.empty()
-    _render_loader(loader, "Clasificando clientes del día...", f"{len(df_bd):,} filas en hoja BD")
+    _render_loader(loader, "Clasificando especiales del día...", f"{len(df_bd):,} filas en hoja BD")
 
-    # Todos los clientes del Monitoreo entran al archivo: con especial activa
-    # van enabled + nombre_ruta; el resto va disabled para borrar cualquier
-    # ruta fija que les haya quedado de dias anteriores.
-    clientes_dia = {}
+    # 1. Del Monitoreo solo se extraen los clientes que la col H marca como
+    #    especial activa (su nombre y ruta). VENTA PROSPECTO nunca se habilita.
+    especiales = {}
     for idx in range(len(df_bd)):
         ruta_arch = _num_habilidad(str(df_bd.iat[idx, BD_COL_RUTA]).upper())
-        especial = ruta_arch if ruta_arch in especiales_activas else None
+        if ruta_arch not in especiales_activas:
+            continue
         cliente = _limpiar_codigo_cliente(df_bd.iat[idx, BD_COL_CODIGO_CLIENTE])
         if not cliente:
             continue
         nombre = str(df_bd.iat[idx, BD_COL_NOMBRE]).strip()
         if nombre.upper().startswith("VENTA PROSPECTO"):
             continue
-        previo = clientes_dia.get(cliente)
-        if previo is None:
-            clientes_dia[cliente] = {"nombre": nombre, "especial": especial}
-        elif especial and not previo["especial"]:
-            # si algun pedido del cliente marca especial activa, esa gana
-            previo["especial"] = especial
+        especiales.setdefault(cliente, {"nombre": nombre, "especial": ruta_arch})
 
-    if not clientes_dia:
+    # 2. Universo base: maestro de clientes cruzado con la planeación Monterrey
+    #    (todos en disabled); se agregan los especiales del día que falten.
+    _render_loader(loader, "Consultando maestro y planeación Monterrey...")
+    supabase = _get_supabase_client()
+    maestro = _fetch_maestro_completo(supabase)
+    universo_mty = _fetch_clientes_monterrey(supabase)
+    if maestro is None or universo_mty is None:
         loader.empty()
-        render_tip("El Monitoreo no trae clientes válidos en la hoja BD.", warning=True)
+        render_tip("No se pudo leer el maestro o la planeación Monterrey en Supabase.", warning=True)
         return
 
-    clientes = list(clientes_dia)
-    _render_loader(loader, "Consultando datos de clientes...", f"{len(clientes)} clientes")
-    supabase = _get_supabase_client()
-    maestro = _fetch_maestro_clientes(supabase, clientes) or {}
-    datos_plan = _fetch_planeacion_datos(supabase, clientes)
+    base_clientes = set(maestro) & set(universo_mty)   # maestro ∩ Monterrey
+    all_clientes = base_clientes | set(especiales)     # + especiales del día
+    if not all_clientes:
+        loader.empty()
+        render_tip(
+            "No hay clientes Monterrey registrados (maestro ∩ planeación) ni "
+            "especiales en el Monitoreo.",
+            warning=True,
+        )
+        return
+
+    # planeación de respaldo para especiales fuera del universo Monterrey
+    faltan = [c for c in especiales if c not in universo_mty]
+    extra_pln = _fetch_planeacion_datos(supabase, faltan) if faltan else {}
     loader.empty()
 
     filas = []
     sin_coords = 0
-    for cliente, info in clientes_dia.items():
+    for cliente in sorted(all_clientes):
+        info_esp = especiales.get(cliente)
         m = maestro.get(cliente) or {}
-        data = datos_plan.get(cliente) or {}
+        data = universo_mty.get(cliente) or extra_pln.get(cliente) or {}
+        nombre = (m.get("nombre") or "").strip()
+        if not nombre and info_esp:
+            nombre = info_esp["nombre"]
         dur = m.get("tiempo")
         if dur in (None, ""):
             dur = _try_num(data.get("duracion"))
@@ -764,10 +822,10 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
         lon = m.get("lon") if m.get("lon") is not None else data.get("y")
         if lat in (None, "") or lon in (None, ""):
             sin_coords += 1
-        es_especial = bool(info["especial"])
+        es_especial = bool(info_esp)
         filas.append({
             "customer_id_sap": cliente,
-            "nombre": info["nombre"],
+            "nombre": nombre,
             "tiempo_de_servicio": dur if dur not in (None, "") else 15,
             "horario_de_inicio": _fmt_hora(m.get("hora_inicio") or data.get("hora_inicio"), "08:00:00"),
             "horario_de_fin": _fmt_hora(m.get("hora_final") or data.get("hora_final"), "20:00:00"),
@@ -775,7 +833,7 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
             "longitud": lon if lon is not None else "",
             "Telefono": "",
             "tiene_ruta_fija": "enabled" if es_especial else "disabled",
-            "nombre_ruta": _ruta_nombre(info["especial"]) if es_especial else "",
+            "nombre_ruta": _ruta_nombre(info_esp["especial"]) if es_especial else "",
             "secuencia_en_ruta_fija": "",
             "estado_de_consideracion": "enabled",
             "estado_de_ruta_especial_puebla": "disabled",
@@ -786,18 +844,17 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
     df_a = pd.DataFrame(filas, columns=SALIDA_A_COLS)
     buffer = _escribir_excel(df_a, "Hoja1", num_cols=["tiempo_de_servicio", "latitud", "longitud"])
 
-    base = nombre_original.rsplit(".", 1)[0]
+    base_name = nombre_original.rsplit(".", 1)[0]
     conteo = {}
-    n_disabled = 0
-    for info in clientes_dia.values():
-        if info["especial"]:
-            conteo[info["especial"]] = conteo.get(info["especial"], 0) + 1
-        else:
-            n_disabled += 1
+    for info in especiales.values():
+        conteo[info["especial"]] = conteo.get(info["especial"], 0) + 1
     st.session_state["avp2_esp_bytes"] = buffer.getvalue()
-    st.session_state["avp2_esp_name"] = f"{base}_especiales_ruta_fija.xlsx"
+    st.session_state["avp2_esp_name"] = f"{base_name}_especiales_ruta_fija.xlsx"
     st.session_state["avp2_esp_stats"] = {
-        "conteo": conteo, "disabled": n_disabled, "sin_coords": sin_coords,
+        "conteo": conteo,
+        "disabled": len(all_clientes) - len(especiales),
+        "sin_coords": sin_coords,
+        "total": len(all_clientes),
     }
 
 
@@ -806,10 +863,11 @@ def _subseccion_archivo_especiales():
         render_tip(
             "A Simpli hay que indicarle qué clientes pertenecen a las rutas especiales "
             "<strong>antes</strong> de rutear. Sube el Monitoreo de Pedidos (hoja BD): "
-            "el archivo incluye <strong>todos los clientes del día</strong> — los que la "
-            "<strong>col H</strong> marca como especial activa van <code>enabled</code> con "
-            "su ruta, y el resto va <code>disabled</code> para borrar cualquier ruta fija "
-            "que les haya quedado de días anteriores."
+            "el archivo incluye <strong>todos los clientes Monterrey registrados</strong> "
+            "(maestro cruzado con la planeación) — los que la <strong>col H</strong> marca "
+            "como especial activa van <code>enabled</code> con su ruta, y el resto va "
+            "<code>disabled</code> para borrar cualquier ruta fija que les haya quedado de "
+            "días anteriores."
         )
 
         cols_esp = st.columns(len(ESPECIALES_MONTERREY))
@@ -852,8 +910,9 @@ def _subseccion_archivo_especiales():
         if st.session_state.get("avp2_esp_bytes"):
             stats = st.session_state.get("avp2_esp_stats") or {}
             conteo = stats.get("conteo") or {}
-            partes = [
-                f"<code>{_ruta_nombre(k)}</code>: <strong>{v}</strong>"
+            partes = [f"Total: <strong>{stats.get('total', 0)}</strong>"]
+            partes += [
+                f"<code>{_ruta_nombre(k)}</code> (enabled): <strong>{v}</strong>"
                 for k, v in sorted(conteo.items())
             ]
             partes.append(f"Sin especial (disabled): <strong>{stats.get('disabled', 0)}</strong>")
