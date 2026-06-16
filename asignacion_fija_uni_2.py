@@ -3,6 +3,7 @@ import re
 import streamlit as st
 import pandas as pd
 import requests as _requests
+from openpyxl import Workbook
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from utils import (
@@ -959,6 +960,226 @@ def _subseccion_archivo_especiales():
             )
 
 
+# ---------------------------------------------------------------------------
+# Descargar plan en formato SimpliRoute
+# ---------------------------------------------------------------------------
+# Reproduce el export nativo de SimpliRoute (hoja "Plan" con todas las rutas +
+# una hoja por ruta). Todo sale de la API; la única columna que la API no
+# entrega por visita es "Zonas", que se deja en blanco. En Monterrey el archivo
+# combina los dos planes de la fecha; en Tláhuac, el único plan.
+PLAN_COLS = [
+    "Conductor", "Vehículo", "Índice de ruta", "Parada", "Título", "Dirección",
+    "Tiempo de servicio", "Tiempo estimado de llegada", "Distancia", "Carga",
+    "Carga total", "Latitud", "Longitud", "ID de referencia", "Advertencias",
+    "Capacidad 2", "Capacidad 3", "Comentario de la ruta", "Notas", "Zonas",
+    "Alertas de la visita",
+]
+
+
+def _dur_a_minutos(dur):
+    """'00:15:00' -> 15. None/vacío -> None."""
+    s = str(dur or "").strip()
+    if not s or s.lower() in ("none", "nan", "null"):
+        return None
+    partes = s.split(":")
+    try:
+        h = int(partes[0]) if len(partes) >= 1 else 0
+        m = int(partes[1]) if len(partes) >= 2 else 0
+        return h * 60 + m
+    except (ValueError, TypeError):
+        return None
+
+
+def _fmt_eta(fecha_str, hora):
+    """'09:22:00' -> '2026-06-16T09:22'. None/vacío -> None."""
+    s = str(hora or "").strip()
+    if not s or s.lower() in ("none", "nan", "null"):
+        return None
+    hhmm = ":".join(s.split(":")[:2])
+    return f"{fecha_str}T{hhmm}"
+
+
+def _a_float(val):
+    try:
+        return float(val) if val not in (None, "") else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _sheet_name_safe(name, usados):
+    s = re.sub(r"[\[\]:*?/\\]", "-", str(name))[:31] or "Hoja"
+    base, i = s, 1
+    while s in usados:
+        suf = f"_{i}"
+        s = base[:31 - len(suf)] + suf
+        i += 1
+    usados.add(s)
+    return s
+
+
+def _filas_de_ruta(fecha_str, indice, veh_name, driver_name, ruta_obj, visitas_ruta):
+    """Filas de una ruta: la 'Inicio' (depósito) + una por visita ordenada."""
+    total_load = _try_num(ruta_obj.get("total_load"))
+    comentario = ruta_obj.get("comment") or None
+    filas = [[
+        driver_name, veh_name, indice, 0, "Inicio",
+        ruta_obj.get("location_start_address") or "",
+        None,
+        _fmt_eta(fecha_str, ruta_obj.get("estimated_time_start")),
+        0,
+        None,
+        total_load,
+        _a_float(ruta_obj.get("location_start_latitude")),
+        _a_float(ruta_obj.get("location_start_longitude")),
+        None, None, None, None, comentario, None, "", None,
+    ]]
+    ordenadas = sorted(visitas_ruta, key=lambda v: v.get("order") if v.get("order") is not None else 0)
+    for parada, v in enumerate(ordenadas, start=1):
+        filas.append([
+            driver_name, veh_name, indice, parada,
+            v.get("title") or "", v.get("address") or "",
+            _dur_a_minutos(v.get("duration")),
+            _fmt_eta(fecha_str, v.get("estimated_time_arrival")),
+            None,
+            _try_num(v.get("load")),
+            total_load,
+            _a_float(v.get("latitude")),
+            _a_float(v.get("longitude")),
+            v.get("reference") or None,
+            None,
+            _try_num(v.get("load_2")),
+            _try_num(v.get("load_3")),
+            comentario,
+            v.get("notes") or None,
+            "",
+            None,
+        ])
+    return filas
+
+
+def _generar_archivo_plan(token, fecha_str, planes_sel):
+    """Construye el xlsx del/los plan(es). Devuelve (buffer, stats, error)."""
+    vehiculos, err = _fetch_vehiculos_plan(token, fecha_str)
+    if err or not vehiculos:
+        return None, None, f"No se pudo leer el plan: {err}" if err else "El plan no tiene rutas en esa fecha."
+    rutas_full, err = _listar_rutas_completas(token, fecha_str)
+    if err:
+        return None, None, f"Error al consultar rutas: {err}"
+    visitas, err = _fetch_visitas_fecha(token, fecha_str)
+    if err:
+        return None, None, f"Error al consultar visitas: {err}"
+
+    info_ruta = {}
+    for v in vehiculos:
+        vn = v.get("name") or ""
+        dn = (v.get("driver") or {}).get("name") or ""
+        for rt in v.get("routes", []):
+            if rt.get("id"):
+                info_ruta[rt["id"]] = (vn, dn)
+
+    por_id = {r.get("id"): r for r in rutas_full}
+    vis_por_ruta = {}
+    for vis in visitas:
+        rid = vis.get("route")
+        if rid:
+            vis_por_ruta.setdefault(rid, []).append(vis)
+
+    def _key_ruta(rid):
+        vn = info_ruta.get(rid, ("", ""))[0]
+        num = _extraer_num_vehiculo(vn)
+        return (0, int(num)) if num and num.isdigit() else (1, vn)
+
+    rutas_ordenadas = []
+    vistos = set()
+    for plan in planes_sel:
+        for rid in sorted(_rutas_de_plan(plan), key=_key_ruta):
+            if rid in por_id and rid not in vistos:
+                rutas_ordenadas.append(rid)
+                vistos.add(rid)
+
+    if not rutas_ordenadas:
+        return None, None, "Los planes seleccionados no tienen rutas en /routes/routes/."
+
+    plan_rows, hojas = [], []
+    n_visitas = 0
+    for indice, rid in enumerate(rutas_ordenadas, start=1):
+        vn, dn = info_ruta.get(rid, ("", ""))
+        vis_ruta = vis_por_ruta.get(rid, [])
+        n_visitas += len(vis_ruta)
+        filas = _filas_de_ruta(fecha_str, indice, vn, dn, por_id[rid], vis_ruta)
+        plan_rows.extend(filas)
+        num = _extraer_num_vehiculo(vn) or (vn or f"ruta{indice}")
+        hojas.append((f"{indice}. {num}", filas))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Plan"
+    ws.append(PLAN_COLS)
+    for fila in plan_rows:
+        ws.append(fila)
+    usados = {"Plan"}
+    for nombre, filas in hojas:
+        hoja = wb.create_sheet(title=_sheet_name_safe(nombre, usados))
+        hoja.append(PLAN_COLS)
+        for fila in filas:
+            hoja.append(fila)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    stats = {"rutas": len(rutas_ordenadas), "visitas": n_visitas, "planes": len(planes_sel)}
+    return buffer, stats, None
+
+
+def _subseccion_descargar_plan(token, fecha_str, planes):
+    with st.expander("Descargar plan en formato SimpliRoute"):
+        render_tip(
+            "Genera un archivo idéntico al export de SimpliRoute (hoja <strong>Plan</strong> "
+            "con todas las rutas + una hoja por ruta). En <strong>Monterrey</strong> selecciona "
+            "los dos planes; en <strong>Tláhuac</strong>, el único. La columna "
+            "<strong>Zonas</strong> sale en blanco (la API no la entrega por visita)."
+        )
+        idxs = st.multiselect(
+            "Planes a incluir",
+            range(len(planes)),
+            default=list(range(len(planes))),
+            format_func=lambda i: _plan_label(planes[i]),
+            key="avp2_dl_planes",
+            label_visibility="collapsed",
+        )
+        if st.button("Generar archivo del plan", use_container_width=True, key="avp2_dl_btn"):
+            st.session_state.pop("avp2_dl_bytes", None)
+            if not idxs:
+                render_tip("Selecciona al menos un plan.", warning=True)
+            else:
+                loader = st.empty()
+                _render_loader(loader, "Generando archivo del plan...", fecha_str)
+                buffer, stats, err = _generar_archivo_plan(token, fecha_str, [planes[i] for i in idxs])
+                loader.empty()
+                if err:
+                    st.error(err)
+                else:
+                    st.session_state["avp2_dl_bytes"] = buffer.getvalue()
+                    st.session_state["avp2_dl_name"] = f"SimpliRoute_Plan_{fecha_str}.xlsx"
+                    st.session_state["avp2_dl_stats"] = stats
+
+        if st.session_state.get("avp2_dl_bytes"):
+            stats = st.session_state.get("avp2_dl_stats") or {}
+            render_tip(
+                f"Archivo listo — <strong>{stats.get('planes', 0)}</strong> plan(es), "
+                f"<strong>{stats.get('rutas', 0)}</strong> rutas, "
+                f"<strong>{stats.get('visitas', 0)}</strong> visitas."
+            )
+            st.download_button(
+                "Descargar archivo del plan",
+                st.session_state["avp2_dl_bytes"],
+                file_name=st.session_state["avp2_dl_name"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+                key="avp2_dl_descargar",
+            )
+
+
 def _seccion_asignar_vehiculos():
     render_label("Cuenta")
     cuenta = st.radio(
@@ -1016,6 +1237,8 @@ def _seccion_asignar_vehiculos():
             "no se tocan."
         )
         return
+
+    _subseccion_descargar_plan(token, fecha_str, planes)
 
     render_label("Plan")
     idx_plan = st.selectbox(
