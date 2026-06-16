@@ -1133,9 +1133,7 @@ def _generar_archivo_plan(token, fecha_str, planes_sel):
 def _subseccion_descargar_plan(token, fecha_str, planes):
     with st.expander("Descargar plan en formato SimpliRoute"):
         render_tip(
-            "Genera un archivo idéntico al export de SimpliRoute (hoja <strong>Plan</strong> "
-            "con todas las rutas + una hoja por ruta). En <strong>Monterrey</strong> selecciona "
-            "los dos planes; en <strong>Tláhuac</strong>, el único. La columna "
+            "Hoja <strong>Plan</strong> con todas las rutas + una hoja por ruta. La columna "
             "<strong>Zonas</strong> sale en blanco (la API no la entrega por visita)."
         )
         idxs = st.multiselect(
@@ -1237,8 +1235,6 @@ def _seccion_asignar_vehiculos():
             "no se tocan."
         )
         return
-
-    _subseccion_descargar_plan(token, fecha_str, planes)
 
     render_label("Plan")
     idx_plan = st.selectbox(
@@ -1354,6 +1350,15 @@ def _seccion_asignar_vehiculos():
     )
     if st.button("Actualizar habilidades desde el plan", use_container_width=True, key="avp2_btn_feedback"):
         _actualizar_habilidades_desde_plan(token, fecha_str, cuenta, plan_id, rutas_plan)
+
+    st.markdown("---")
+    render_label("Descargar plan en formato SimpliRoute")
+    render_tip(
+        "Una vez asignados los vehículos, descarga el plan en el formato nativo de "
+        "SimpliRoute. En <strong>Monterrey</strong> incluye los dos planes; en "
+        "<strong>Tláhuac</strong>, el único."
+    )
+    _subseccion_descargar_plan(token, fecha_str, planes)
 
 
 def _subseccion_propuesta(token, fecha_str, plan_id):
