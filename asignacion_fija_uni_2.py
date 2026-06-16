@@ -259,6 +259,15 @@ _ESPECIALES_NUMS = {_num_habilidad(v) for v in ESPECIALES_MONTERREY}
 _PUT_RUTA_WORKERS = 10
 _SIN_ASIGNAR = "(dejar como está)"
 
+# Unidades con tope de capacidad (carga_2 = cajas). Solo Monterrey; en Tláhuac
+# estos numeros no existen, asi que el filtro no aplica.
+_CAP_VEHICULO = {"20342": 280, "20343": 280}
+
+
+def _excede_cap(num, carga2):
+    cap = _CAP_VEHICULO.get(num)
+    return cap is not None and (carga2 or 0) > cap
+
 
 def _sr_headers(token):
     return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
@@ -379,10 +388,13 @@ def _cliente_de_visita(visita):
     return cliente
 
 
-def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None, rutas_plan=None):
+def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None,
+                         rutas_plan=None, respetar_capacidad=False):
     """Greedy 1:1: el par (ruta, vehiculo fijo) con mayor % de clientes gana primero.
     Rutas con vehiculo especial o ya fijo quedan bloqueadas y su vehiculo sale del pool.
-    Solo considera rutas del plan seleccionado (plan_id/rutas_plan)."""
+    Solo considera rutas del plan seleccionado (plan_id/rutas_plan).
+    Con respetar_capacidad, una unidad con tope no compite por rutas que exceden su
+    capacidad (carga_2) — se va a su mejor ruta que sí cabe y la excedida queda libre."""
     rutas_plan = rutas_plan or set()
     rutas = {}
     usados = set()
@@ -405,14 +417,16 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None, r
                     "bloqueo": bloqueo,
                 }
 
-    # clientes unicos y conteo de visitas por ruta
+    # clientes unicos, conteo de visitas y carga_2 (cajas) por ruta
     clientes_ruta = {}
     visitas_ruta = {}
+    carga_ruta = {}
     for vis in visitas:
         rid = vis.get("route")
         if not rid or rid not in rutas:
             continue
         visitas_ruta[rid] = visitas_ruta.get(rid, 0) + 1
+        carga_ruta[rid] = carga_ruta.get(rid, 0) + (_try_num(vis.get("load_2")) or 0)
         cliente = _cliente_de_visita(vis)
         if cliente:
             clientes_ruta.setdefault(rid, set()).add(cliente)
@@ -424,6 +438,7 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None, r
         info.update({
             "visitas": visitas_ruta.get(rid, 0),
             "clientes": len(clientes),
+            "carga2": carga_ruta.get(rid, 0),
             "propuesto": None, "pct": None, "votos_num": None,
         })
         propuestas.append(info)
@@ -436,6 +451,10 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None, r
             if num and num in flota and num not in _ESPECIALES_NUMS:
                 votos[num] = votos.get(num, 0) + 1
         for num, n in votos.items():
+            # con respetar_capacidad, la unidad con tope no compite por esta ruta
+            # si la carga la excede (asi se va a su mejor ruta que si cabe)
+            if respetar_capacidad and _excede_cap(num, info["carga2"]):
+                continue
             candidatos.append((n / len(clientes), n, rid, num))
 
     candidatos.sort(key=lambda t: (-t[0], -t[1]))
@@ -1039,8 +1058,9 @@ def _seccion_asignar_vehiculos():
         )
 
     if st.button("Leer plan y proponer asignación", use_container_width=True, key="avp2_btn_leer"):
-        for k in ("avp2_propuestas", "avp2_flota", "avp2_usados", "avp2_conductores",
-                  "avp2_fecha_leida", "avp2_plan_leido"):
+        for k in ("avp2_raw_veh", "avp2_raw_vis", "avp2_raw_lookup", "avp2_flota",
+                  "avp2_conductores", "avp2_fecha_leida", "avp2_plan_leido",
+                  "avp2_rutas_plan", "avp2_respetar_cap"):
             st.session_state.pop(k, None)
 
         loader = st.empty()
@@ -1085,16 +1105,19 @@ def _seccion_asignar_vehiculos():
         lookup = _fetch_planeacion_smart(supabase, clientes)
         loader.empty()
 
-        propuestas, usados = _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id, rutas_plan)
-        if not propuestas:
-            st.error("El plan seleccionado no tiene rutas en la respuesta de la API.")
-            return
-        st.session_state["avp2_propuestas"] = propuestas
+        # se guardan los datos crudos para poder recalcular la propuesta al
+        # activar/desactivar el respeto de capacidad sin volver a consultar la API
+        st.session_state["avp2_raw_veh"] = vehiculos_plan
+        st.session_state["avp2_raw_vis"] = [
+            {"route": v.get("route"), "notes": v.get("notes"), "load_2": v.get("load_2")}
+            for v in visitas
+        ]
+        st.session_state["avp2_raw_lookup"] = lookup
         st.session_state["avp2_flota"] = flota
-        st.session_state["avp2_usados"] = sorted(usados)
         st.session_state["avp2_conductores"] = conductores
         st.session_state["avp2_fecha_leida"] = fecha_str
         st.session_state["avp2_plan_leido"] = plan_id
+        st.session_state["avp2_rutas_plan"] = list(rutas_plan)
 
     _subseccion_propuesta(token, fecha_str, plan_id)
 
@@ -1111,8 +1134,7 @@ def _seccion_asignar_vehiculos():
 
 
 def _subseccion_propuesta(token, fecha_str, plan_id):
-    propuestas = st.session_state.get("avp2_propuestas")
-    if not propuestas:
+    if "avp2_raw_veh" not in st.session_state:
         render_tip(
             "Pulsa <strong>Leer plan y proponer asignación</strong> para generar la "
             "propuesta de vehículos del plan seleccionado."
@@ -1127,8 +1149,45 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
         return
 
     flota = st.session_state["avp2_flota"]
-    usados = set(st.session_state["avp2_usados"])
     conductores = st.session_state["avp2_conductores"]
+    vehiculos_plan = st.session_state["avp2_raw_veh"]
+    visitas = st.session_state["avp2_raw_vis"]
+    lookup = st.session_state["avp2_raw_lookup"]
+    rutas_plan = set(st.session_state.get("avp2_rutas_plan") or [])
+
+    # propuesta base (solo %) — sirve para detectar conflictos de capacidad
+    prop_pct, usados_pct = _proponer_asignacion(
+        vehiculos_plan, visitas, lookup, flota, plan_id, rutas_plan,
+        respetar_capacidad=False,
+    )
+    if not prop_pct:
+        st.error("El plan seleccionado no tiene rutas en la respuesta de la API.")
+        return
+    hay_conflicto = any(
+        p["propuesto"] and _excede_cap(p["propuesto"], p.get("carga2", 0)) for p in prop_pct
+    )
+
+    respetar = False
+    if hay_conflicto:
+        render_tip(
+            "<strong>Capacidad excedida</strong> — una unidad con tope (20342/20343) quedó "
+            "en una ruta que pasa de 280 cajas. Mantén la propuesta y cámbiala a mano, o "
+            "marca la opción para mover la unidad a su mejor ruta que sí cabe.",
+            warning=True,
+        )
+        respetar = st.checkbox(
+            "Mover unidad con tope a su mejor ruta que sí cabe (libera la ruta excedida)",
+            key="avp2_respetar_cap",
+        )
+
+    if respetar:
+        propuestas, usados = _proponer_asignacion(
+            vehiculos_plan, visitas, lookup, flota, plan_id, rutas_plan,
+            respetar_capacidad=True,
+        )
+    else:
+        propuestas, usados = prop_pct, usados_pct
+    usados = set(usados)
 
     def _nombre_conductor(num):
         d_id = flota[num]["driver_id"]
@@ -1154,12 +1213,16 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
 
     filas = []
     for p in propuestas:
+        carga = p.get("carga2", 0)
+        carga_txt = f"{carga:.0f}"
         if p["bloqueo"]:
             prop, conductor, match = f"({p['bloqueo']})", "—", "—"
         elif p["propuesto"]:
             prop = flota[p["propuesto"]]["name"]
             conductor = _nombre_conductor(p["propuesto"])
             match = f"{p['pct'] * 100:.0f}% ({p['votos_num']}/{p['clientes']})"
+            if _excede_cap(p["propuesto"], carga):
+                carga_txt = f"{carga:.0f} ⚠ >{_CAP_VEHICULO[p['propuesto']]}"
         else:
             prop, conductor, match = "—", "—", "—"
         filas.append({
@@ -1168,14 +1231,37 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
             "Vehículo propuesto": prop,
             "Conductor propuesto": conductor,
             "% match": match,
+            "Carga 2": carga_txt,
             "Clientes": p["clientes"],
             "Visitas": p["visitas"],
         })
     render_label("Propuesta de asignación")
     st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
 
-    manuales = {}
     sobrantes = sorted(n for n in flota if n not in usados and n not in _ESPECIALES_NUMS)
+
+    # Capacidad excedida y se eligió mantener el %: se ofrece cambio manual.
+    overrides = {}
+    conflictos = [
+        p for p in propuestas
+        if p["propuesto"] and _excede_cap(p["propuesto"], p.get("carga2", 0))
+    ]
+    if conflictos:
+        render_label("Rutas sobre capacidad — cambiar unidad (opcional)")
+        opciones_cap_base = [flota[n]["name"] for n in sobrantes]
+        for p in conflictos:
+            cap = _CAP_VEHICULO[p["propuesto"]]
+            prop_name = flota[p["propuesto"]]["name"]
+            mantener = f"Mantener {prop_name} ({p['carga2']:.0f} cajas, excede {cap})"
+            sel = st.selectbox(
+                f"{p['veh_actual']} — {p['carga2']:.0f} cajas, {p['visitas']} visitas",
+                [mantener] + opciones_cap_base,
+                key=f"avp2_cap_{p['uuid']}",
+            )
+            if sel != mantener:
+                overrides[p["uuid"]] = _extraer_num_vehiculo(sel)
+
+    manuales = {}
     if sin_match and sobrantes:
         render_label("Rutas sin propuesta — asignación manual (opcional)")
         opciones = [_SIN_ASIGNAR] + [flota[n]["name"] for n in sobrantes]
@@ -1188,24 +1274,36 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
             if sel != _SIN_ASIGNAR:
                 manuales[p["uuid"]] = _extraer_num_vehiculo(sel)
 
-        elegidos = list(manuales.values())
-        duplicados = {n for n in elegidos if elegidos.count(n) > 1}
-        if duplicados:
-            render_tip(
-                "Hay vehículos repetidos en la asignación manual: "
-                + ", ".join(flota[n]["name"] for n in sorted(duplicados)),
-                warning=True,
-            )
-            return
+    elegidos = list(manuales.values()) + list(overrides.values())
+    duplicados = {n for n in elegidos if elegidos.count(n) > 1}
+    if duplicados:
+        render_tip(
+            "Hay vehículos repetidos en la asignación manual: "
+            + ", ".join(flota[n]["name"] for n in sorted(duplicados)),
+            warning=True,
+        )
+        return
 
     cambios = [
         {"uuid": p["uuid"], "veh_actual": p["veh_actual"], "num": num}
         for p in propuestas
-        if not p["bloqueo"] and (num := p["propuesto"] or manuales.get(p["uuid"]))
+        if not p["bloqueo"]
+        and (num := overrides.get(p["uuid"]) or p["propuesto"] or manuales.get(p["uuid"]))
     ]
     if not cambios:
         render_tip("No hay cambios por aplicar — ninguna ruta tiene vehículo propuesto o manual.")
         return
+
+    carga_por_uuid = {p["uuid"]: p.get("carga2", 0) for p in propuestas}
+    sigue_excedida = sum(
+        1 for c in cambios if _excede_cap(c["num"], carga_por_uuid.get(c["uuid"], 0))
+    )
+    if sigue_excedida:
+        render_tip(
+            f"<strong>{sigue_excedida}</strong> ruta(s) se aplicarán con la unidad sobre "
+            "su capacidad (la mantuviste).",
+            warning=True,
+        )
 
     if st.button(
         f"Aplicar asignación en SimpliRoute ({len(cambios)} rutas)",
