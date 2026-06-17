@@ -260,14 +260,14 @@ _ESPECIALES_NUMS = {_num_habilidad(v) for v in ESPECIALES_MONTERREY}
 _PUT_RUTA_WORKERS = 10
 _SIN_ASIGNAR = "(dejar como está)"
 
-# Unidades con tope de capacidad (carga_2 = cajas). Solo Monterrey; en Tláhuac
+# Unidades con tope de capacidad (carga_3 = cajas). Solo Monterrey; en Tláhuac
 # estos numeros no existen, asi que el filtro no aplica.
 _CAP_VEHICULO = {"20342": 280, "20343": 280}
 
 
-def _excede_cap(num, carga2):
+def _excede_cap(num, carga3):
     cap = _CAP_VEHICULO.get(num)
-    return cap is not None and (carga2 or 0) > cap
+    return cap is not None and (carga3 or 0) > cap
 
 
 def _sr_headers(token):
@@ -395,7 +395,7 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None,
     Rutas con vehiculo especial o ya fijo quedan bloqueadas y su vehiculo sale del pool.
     Solo considera rutas del plan seleccionado (plan_id/rutas_plan).
     Con respetar_capacidad, una unidad con tope no compite por rutas que exceden su
-    capacidad (carga_2) — se va a su mejor ruta que sí cabe y la excedida queda libre."""
+    capacidad (carga_3) — se va a su mejor ruta que sí cabe y la excedida queda libre."""
     rutas_plan = rutas_plan or set()
     rutas = {}
     usados = set()
@@ -418,7 +418,7 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None,
                     "bloqueo": bloqueo,
                 }
 
-    # clientes unicos, conteo de visitas y carga_2 (cajas) por ruta
+    # clientes unicos, conteo de visitas y carga_3 (cajas) por ruta
     clientes_ruta = {}
     visitas_ruta = {}
     carga_ruta = {}
@@ -427,7 +427,7 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None,
         if not rid or rid not in rutas:
             continue
         visitas_ruta[rid] = visitas_ruta.get(rid, 0) + 1
-        carga_ruta[rid] = carga_ruta.get(rid, 0) + (_try_num(vis.get("load_2")) or 0)
+        carga_ruta[rid] = carga_ruta.get(rid, 0) + (_try_num(vis.get("load_3")) or 0)
         cliente = _cliente_de_visita(vis)
         if cliente:
             clientes_ruta.setdefault(rid, set()).add(cliente)
@@ -439,7 +439,7 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None,
         info.update({
             "visitas": visitas_ruta.get(rid, 0),
             "clientes": len(clientes),
-            "carga2": carga_ruta.get(rid, 0),
+            "carga3": carga_ruta.get(rid, 0),
             "propuesto": None, "pct": None, "votos_num": None,
         })
         propuestas.append(info)
@@ -454,7 +454,7 @@ def _proponer_asignacion(vehiculos_plan, visitas, lookup, flota, plan_id=None,
         for num, n in votos.items():
             # con respetar_capacidad, la unidad con tope no compite por esta ruta
             # si la carga la excede (asi se va a su mejor ruta que si cabe)
-            if respetar_capacidad and _excede_cap(num, info["carga2"]):
+            if respetar_capacidad and _excede_cap(num, info["carga3"]):
                 continue
             candidatos.append((n / len(clientes), n, rid, num))
 
@@ -1346,7 +1346,7 @@ def _seccion_asignar_vehiculos():
         # activar/desactivar el respeto de capacidad sin volver a consultar la API
         st.session_state["avp2_raw_veh"] = vehiculos_plan
         st.session_state["avp2_raw_vis"] = [
-            {"route": v.get("route"), "notes": v.get("notes"), "load_2": v.get("load_2")}
+            {"route": v.get("route"), "notes": v.get("notes"), "load_3": v.get("load_3")}
             for v in visitas
         ]
         st.session_state["avp2_raw_lookup"] = lookup
@@ -1410,7 +1410,7 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
         st.error("El plan seleccionado no tiene rutas en la respuesta de la API.")
         return
     hay_conflicto = any(
-        p["propuesto"] and _excede_cap(p["propuesto"], p.get("carga2", 0)) for p in prop_pct
+        p["propuesto"] and _excede_cap(p["propuesto"], p.get("carga3", 0)) for p in prop_pct
     )
 
     respetar = False
@@ -1459,7 +1459,7 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
 
     filas = []
     for p in propuestas:
-        carga = p.get("carga2", 0)
+        carga = p.get("carga3", 0)
         carga_txt = f"{carga:.0f}"
         if p["bloqueo"]:
             prop, conductor, match = f"({p['bloqueo']})", "—", "—"
@@ -1477,7 +1477,7 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
             "Vehículo propuesto": prop,
             "Conductor propuesto": conductor,
             "% match": match,
-            "Carga 2": carga_txt,
+            "Carga 3": carga_txt,
             "Clientes": p["clientes"],
             "Visitas": p["visitas"],
         })
@@ -1490,7 +1490,7 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
     overrides = {}
     conflictos = [
         p for p in propuestas
-        if p["propuesto"] and _excede_cap(p["propuesto"], p.get("carga2", 0))
+        if p["propuesto"] and _excede_cap(p["propuesto"], p.get("carga3", 0))
     ]
     if conflictos:
         render_label("Rutas sobre capacidad — cambiar unidad (opcional)")
@@ -1498,9 +1498,9 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
         for p in conflictos:
             cap = _CAP_VEHICULO[p["propuesto"]]
             prop_name = flota[p["propuesto"]]["name"]
-            mantener = f"Mantener {prop_name} ({p['carga2']:.0f} cajas, excede {cap})"
+            mantener = f"Mantener {prop_name} ({p['carga3']:.0f} cajas, excede {cap})"
             sel = st.selectbox(
-                f"{p['veh_actual']} — {p['carga2']:.0f} cajas, {p['visitas']} visitas",
+                f"{p['veh_actual']} — {p['carga3']:.0f} cajas, {p['visitas']} visitas",
                 [mantener] + opciones_cap_base,
                 key=f"avp2_cap_{p['uuid']}",
             )
@@ -1540,7 +1540,7 @@ def _subseccion_propuesta(token, fecha_str, plan_id):
         render_tip("No hay cambios por aplicar — ninguna ruta tiene vehículo propuesto o manual.")
         return
 
-    carga_por_uuid = {p["uuid"]: p.get("carga2", 0) for p in propuestas}
+    carga_por_uuid = {p["uuid"]: p.get("carga3", 0) for p in propuestas}
     sigue_excedida = sum(
         1 for c in cambios if _excede_cap(c["num"], carga_por_uuid.get(c["uuid"], 0))
     )
