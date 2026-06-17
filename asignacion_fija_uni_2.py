@@ -786,10 +786,17 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
 
     # 1. Del Monitoreo solo se extraen los clientes que la col H marca como
     #    especial activa (su nombre y ruta). VENTA PROSPECTO nunca se habilita.
+    #    Si solo se selecciona UNA ruta especial, los clientes de cualquier
+    #    especial (FM y EV) se consolidan en esa única ruta — ese día corre una
+    #    sola unidad especial, así que todos sus clientes caen ahí.
+    todas_especiales = {_num_habilidad(v) for v in ESPECIALES_MONTERREY}
+    ruta_unica = next(iter(especiales_activas)) if len(especiales_activas) == 1 else None
+    rutas_a_capturar = todas_especiales if ruta_unica else especiales_activas
+
     especiales = {}
     for idx in range(len(df_bd)):
         ruta_arch = _num_habilidad(str(df_bd.iat[idx, BD_COL_RUTA]).upper())
-        if ruta_arch not in especiales_activas:
+        if ruta_arch not in rutas_a_capturar:
             continue
         cliente = _limpiar_codigo_cliente(df_bd.iat[idx, BD_COL_CODIGO_CLIENTE])
         if not cliente:
@@ -797,7 +804,7 @@ def _generar_archivo_especiales(df_bd, nombre_original, especiales_activas):
         nombre = str(df_bd.iat[idx, BD_COL_NOMBRE]).strip()
         if nombre.upper().startswith("VENTA PROSPECTO"):
             continue
-        especiales.setdefault(cliente, {"nombre": nombre, "especial": ruta_arch})
+        especiales.setdefault(cliente, {"nombre": nombre, "especial": ruta_unica or ruta_arch})
 
     # 2. Universo base: maestro de clientes cruzado con la planeación Monterrey
     #    (todos en disabled); se agregan los especiales del día que falten.
@@ -909,6 +916,17 @@ def _subseccion_archivo_especiales():
                 "Sin especiales seleccionadas: todos los clientes saldrán en "
                 "<code>disabled</code> (solo limpieza de rutas fijas previas).",
                 warning=True,
+            )
+        elif len(activas) == 1:
+            unica = _ruta_nombre(next(iter(activas)))
+            otras = ", ".join(
+                f"<code>{_ruta_nombre(_num_habilidad(e))}</code>"
+                for e in ESPECIALES_MONTERREY
+                if _num_habilidad(e) not in activas
+            )
+            render_tip(
+                f"Una sola ruta especial seleccionada: los clientes de {otras} también "
+                f"se consolidan en <code>{unica}</code>."
             )
 
         if archivo and st.button(
